@@ -119,6 +119,30 @@ and only for documents you may share with an external service. Every call is log
 content): `design-ingest llm-log`. `DESIGN_INGEST_TOKEN_BUDGET` caps the tokens per UTC day.
 Set a spend limit in the API console as the hard stop.
 
+### Search and questions over documentation
+
+```bash
+design-ingest search manuals/ "default Modbus baud rate"          # offline: nothing leaves the computer
+design-ingest ask manuals/ "Which register holds the daily energy yield?" --allow-external
+```
+
+```python
+from design_ingest.search import search
+from design_ingest.ask import ask
+
+hits = search(ingest_dir("manuals/"), "max PV input voltage", doc_types=["datasheet"])
+a = ask("Which register holds the daily energy yield?", "manuals/", allow_external=True)
+a.answer, [(c.file, c.page, c.verified) for c in a.citations]
+```
+
+`search` ranks passages (BM25) offline: text by lines, tables by rows with the header repeated,
+one short passage per register (`Register 5003 (U16): Daily power yields, scale 0.1, unit kWh`) and per
+datasheet specification. `ask` sends only the best few passages (default 8, numbered, with file and
+page) to the model and asks for a short answer with a verbatim quote per claim. **The quotes are
+checked in code**: `verified` is true only if the quote occurs word for word in the passage it names;
+an answer without a verified citation is flagged. If nothing matches, no call is made. The same
+permission, log and budget rules as for `extract` apply.
+
 ### Command line
 
 ```bash

@@ -56,6 +56,35 @@ from ..schema import Chunk, ParseError, Table
 PT_TO_MM = 25.4 / 72
 
 
+_DOUBLED = re.compile(r"(?:([A-Za-z])\1){4,}")  # "IItteemm": fake bold, every glyph drawn twice
+_LONG_WORD = re.compile(r"[A-Za-z]{18,}")  # "RunningRequirements": words run together
+
+
+def _extract_text(page) -> str:
+    """Page text; repairs the two common defects of vendor manuals only when they show.
+
+    * doubled letters (bold made by overprinting): drop the duplicate glyphs;
+    * missing spaces (tight kerning): extract again with a smaller x tolerance, kept
+      only if it removes at least half of the over-long words.
+    """
+    text = page.extract_text() or ""
+    src = page
+    try:
+        if _DOUBLED.search(text):
+            fixed = page.dedupe_chars(tolerance=1)
+            t2 = fixed.extract_text() or ""
+            if t2:
+                src, text = fixed, t2
+        n = len(_LONG_WORD.findall(text))
+        if n >= 3:
+            t3 = src.extract_text(x_tolerance=1.5) or ""
+            if len(_LONG_WORD.findall(t3)) <= n / 2:
+                text = t3
+    except Exception:  # a repair must never lose the page
+        pass
+    return text
+
+
 def _clean(text: str) -> str:
     text = text.replace("­", "")  # soft hyphen
     text = re.sub(r"[ \t]+\n", "\n", text)
@@ -384,7 +413,7 @@ def _pvsyst_summary(pages: list[str], tables: list[Table]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-@register([".pdf"], name="pdf", version="5")
+@register([".pdf"], name="pdf", version="6")
 def parse(
     path: Path,
     tables: bool = True,
@@ -438,7 +467,7 @@ def parse(
                         meta.setdefault("_table_errors", []).append(f"table extraction failed on p.{i}: {type(e).__name__}")
                 boxes = [b for _, b in found]
                 body = horiz.filter(lambda o: o.get("object_type") != "char" or not _inside(o, boxes)) if boxes else horiz
-                text = _clean(body.extract_text() or "")
+                text = _clean(_extract_text(body))
                 if is_drawing:
                     tt = _title_block_text(page)
                     if tt:

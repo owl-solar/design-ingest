@@ -5,6 +5,8 @@
     design-ingest dir FOLDER --out OUT_DIR [--md]
     design-ingest extract FILE --schema module|inverter|battery|tender [--vision] [--out OUT.json]
     design-ingest eval FOLDER [--expected expected.json] [--snapshot OUT.json]
+    design-ingest search PATH "query" [--top 8] [--type datasheet] [--file NAME]
+    design-ingest ask PATH "question" [--top 8] --allow-external
     design-ingest llm-log
 
 ``extract`` sends document content to the Anthropic API: it is blocked unless you pass
@@ -73,6 +75,23 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--model")
     e.add_argument("--out")
 
+    sr = sub.add_parser("search", help="find passages in a file or folder (offline, nothing is sent)")
+    sr.add_argument("path")
+    sr.add_argument("query")
+    sr.add_argument("--top", type=int, default=8)
+    sr.add_argument("--type", action="append", dest="types", help="document type filter, repeatable")
+    sr.add_argument("--file", action="append", dest="files", help="file name filter, repeatable")
+
+    q = sub.add_parser("ask", help="answer a question from the best passages, with checked citations (uses the API)")
+    q.add_argument("path")
+    q.add_argument("question")
+    q.add_argument("--top", type=int, default=8)
+    q.add_argument("--type", action="append", dest="types")
+    q.add_argument("--file", action="append", dest="files")
+    q.add_argument("--model")
+    q.add_argument("--allow-external", action="store_true",
+                   help="confirm that the best passages may be sent to the Anthropic API")
+
     sub.add_parser("llm-log", help="calls made to the external model API (files, sizes, tokens)")
 
     a = ap.parse_args(argv)
@@ -110,6 +129,28 @@ def main(argv: list[str] | None = None) -> int:
 
             return run(Path(a.folder), Path(a.expected) if a.expected else None, use_cache=not a.no_cache,
                        profile=a.profile, snapshot_to=Path(a.snapshot) if a.snapshot else None)
+        elif a.cmd == "search":
+            from .ask import _load
+            from .search import build_index, location
+
+            hits = build_index(_load(a.path)).search(a.query, a.top, a.types, a.files)
+            for i, h in enumerate(hits, 1):
+                print(f"[{i}] {h['score']}  {location(h)}  ({h['kind']})")
+                print("    " + h["text"][:300].replace(chr(10), " | "))
+            if not hits:
+                print("no matching passage")
+        elif a.cmd == "ask":
+            from .ask import ask
+
+            ans = ask(a.question, a.path, top_k=a.top, doc_types=a.types, files=a.files, model=a.model,
+                      allow_external=True if a.allow_external else None)
+            print(ans.answer)
+            if ans.found and not ans.verified:
+                print("! no citation was found word for word in the sent passages: do not rely on this answer")
+            for c in ans.citations:
+                mark = "ok " if c.verified else "NOT FOUND"
+                print(f"  [{c.n}] {mark} {c.file}" + (f", p.{c.page}" if c.page is not None else "") + f': "{c.quote}"')
+            print(f"(sent {len(ans.passages_sent)} passages, {sum(x['chars'] for x in ans.passages_sent)} characters)")
         elif a.cmd == "llm-log":
             from .llm import log_path, summarize
 
