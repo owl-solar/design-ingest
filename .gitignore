@@ -11,3 +11,8 @@ build/
 # real project documents are often confidential: keep them out of git
 data/
 samples/private/
+
+# internal notes for AI tools / local only, not for the public repository
+CLAUDE.md
+CLAUDE.local.md
+.claude/
