@@ -32,6 +32,8 @@ data:
                    Corrective Measures"), one record per code: code, name, measures
                    (list of steps), page, page_end (see design_ingest.faults for the
                    rules; absent when the document has no such table)
+  fault_code_notes footnotes under such a table (a line starting with "*") and rows
+                   whose "code" is not a code: [{text, page}], text only, not interpreted
 
   low_text_pages   pages with a big image (>= 50 % of the page) and under 400
                    characters of text: scans with a thin OCR layer, full-page
@@ -418,7 +420,7 @@ def _pvsyst_summary(pages: list[str], tables: list[Table]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-@register([".pdf"], name="pdf", version="8")
+@register([".pdf"], name="pdf", version="9")
 def parse(
     path: Path,
     tables: bool = True,
@@ -518,7 +520,7 @@ def parse(
     if max_pages is not None and n_pages > max_pages:
         warnings.append(f"read only first {max_pages} of {n_pages} pages")
 
-    fault_codes, fault_warnings = _fault_codes(fault_pages, page_texts)
+    fault_codes, fault_warnings, fault_notes = _fault_codes(fault_pages, page_texts)
     warnings.extend(fault_warnings)
 
     data = {
@@ -531,6 +533,8 @@ def parse(
     }
     if fault_codes:
         data["fault_codes"] = fault_codes
+        if fault_notes:
+            data["fault_code_notes"] = fault_notes
     if drawing_text:
         summ = _drawing_summary("\n".join(drawing_text), "\n".join(title_texts), (profile or {}).get("pdf"))
         if summ:
@@ -569,23 +573,25 @@ def _fault_page(page_no: int, page, horiz) -> dict | None:
         return None
 
 
-def _fault_codes(pages: list[dict], page_texts: list[str]) -> tuple[list[dict], list[str]]:
+def _fault_codes(pages: list[dict], page_texts: list[str]) -> tuple[list[dict], list[str], list[dict]]:
     from .. import faults
 
     if not pages:
-        return [], []
+        return [], [], []
     read = []
     for k, fp in enumerate(pages):
         goes_on = k + 1 < len(pages) and pages[k + 1]["page"] == fp["page"] + 1
         try:
             read.append(faults.read_page(fp["page"], fp["words"], fp["edges"], fp["height"], fp["header"], goes_on))
         except Exception as e:  # a table that cannot be read must not break the page text
-            return [], [f"fault table on p.{fp['page']} could not be read: {type(e).__name__}"]
+            return [], [f"fault table on p.{fp['page']} could not be read: {type(e).__name__}"], []
     # words of the document: decides whether a hyphen at a line end was only hyphenation
     vocab = set(re.findall(r"[a-z]{3,}", " ".join(page_texts).lower()))
     for fp in pages:
         vocab.update(w["text"].lower() for w in fp["words"] if w["text"].isalpha() and len(w["text"]) > 2)
-    return faults.build_records(read, vocab)
+    notes: list[dict] = []
+    records, warns = faults.build_records(read, vocab, notes)
+    return records, warns, notes
 
 
 def _image_cover(page) -> float:

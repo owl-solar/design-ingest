@@ -6,7 +6,7 @@ research code). Everything below is stable within a `schema_version` (see the en
 ## Install, pinned
 
 ```bash
-pip install "design-ingest[llm] @ git+https://github.com/owl-solar/design-ingest@v0.5.0"
+pip install "design-ingest[llm] @ git+https://github.com/owl-solar/design-ingest@v0.5.1"
 # DWG files also need the free ODA File Converter (see README); without it save drawings as DXF.
 ```
 
@@ -39,6 +39,8 @@ ans  = ask("Which register holds the daily yield?", docs, allow_external=True)  
 | `doc.data["registers"]` | register / point lists: `name`, `address`, `n_registers`, `data_type`, `scale`, `unit`, `range`, `access`, `page` |
 
 | `doc.data["fault_codes"]` | PDF manuals and alarm references: one record per fault / alarm code, `{code, name, measures (list of steps), page, page_end}` and, when the document has them, `severity`, `causes` (`[{id, cause, suggestion}]`), `columns` (other table columns by heading, e.g. SMA `S1`/`S2`/`R`), `code_ranges`, `shared_measures`. Layouts: row-ruled tables with a code column (Sungrow, SMA) and one section with tables per alarm (Huawei); found by `search` as one passage per code |
+
+| `doc.data["fault_code_notes"]` | footnotes under a fault code table (a line starting with `*`) and rows whose "code" is not a code: `[{text, page}]`, text only, not interpreted; absent when there are none |
 
 Units are in the key names (`dc_voltage_max_v`, `energy_p50_mwh_year`). Values that are not in the
 document are absent, never guessed.

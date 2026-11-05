@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .faults import _steps
+from .faults import _steps, is_code
 
 _DASH = re.compile("[‐-―−­]")
 _ID = re.compile(r"^(?:alarm|fault|error|event)\s*(?:id|code|no\.?|number)$", re.I)
@@ -106,6 +106,9 @@ def extract_alarm_sections(chunks, tables) -> tuple[list[dict[str, Any]], list[s
             continue
         if kind == "alarm":
             if not t.rows or not _flat(t.rows[0][0]):
+                continue
+            if not is_code(_flat(t.rows[0][0])):
+                warnings.append(f"alarm table on p.{t.page}: '{_flat(t.rows[0][0])[:30]}' is not an alarm ID, left out")
                 continue
             row = [_flat(x) for x in t.rows[0]]
             sev_ix = next((i for i, h in enumerate(t.columns) if _SEV.match(_flat(h))), None)

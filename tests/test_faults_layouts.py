@@ -249,3 +249,54 @@ def test_error_table_search(errors):
     d, _ = errors
     assert search([d], "error 3504 insulation", top_k=1)[0]["text"].startswith("Fault code 3504")
     assert "S1: W" in search([d], "3504", top_k=1)[0]["text"]
+
+
+# ------------------------------------------------------------------ footnotes are not codes
+@pytest.fixture(scope="module")
+def footnoted(tmp_path_factory, error_table):          # error_table registers the font
+    from reportlab.pdfgen import canvas
+
+    path = tmp_path_factory.mktemp("notes") / "errors_notes.pdf"
+    c = canvas.Canvas(str(path), pagesize=(595, H))
+    _header(c, 60)
+    _rule(c, 96)
+    _row(c, 96, 150, ["0103"], ["Grid voltage", "is too high."], ["30 s"], ["30 s"], ["-"], ["• Check the grid."])
+    _rule(c, 150)
+    _row(c, 150, 200, ["0104"], ["Grid voltage", "is too low."], ["C"], ["C"], ["-"], ["• Check the grid."])
+    _rule(c, 200)
+    # footnote under the table (two lines) and a section title, then the heading block of the next table
+    _t(c, 63, 210, ["*Depending on the parameterization, the", "message may have to be acknowledged manually."])
+    _t(c, 43, 250, ["7.5.4 Error numbers 34xx to 40xx"])
+    _rule(c, 270, only={"code", "name"})
+    _header(c, 285)
+    _rule(c, 321)
+    _row(c, 321, 370, ["3504"], ["Insulation error", "detected."], ["W"], ["W"], ["-"], ["• Check the PV array."])
+    _rule(c, 370)
+    # a "code" cell inside the ruled area that is text, not a code
+    _row(c, 370, 400, ["*See"], ["the note above."], [""], [""], [""], [""])
+    _rule(c, 400)
+    _t(c, 63, 410, ["*Last note under the table."])
+    c.showPage()
+    c.save()
+    return path
+
+
+def test_footnote_is_not_a_code_and_is_kept_as_a_note(footnoted):
+    d = ingest(footnoted, use_cache=False)
+    codes = [r["code"] for r in d.data["fault_codes"]]
+    assert codes == ["0103", "0104", "3504"]                       # no "*Depending" or "*See", count unchanged
+    notes = d.data["fault_code_notes"]
+    assert len(notes) == 3 and {n["page"] for n in notes} == {1}
+    assert notes[0]["text"] == "*Depending on the parameterization, the message may have to be acknowledged manually."
+    assert any(n["text"] == "*See the note above." for n in notes)       # a text cell in the ruled area
+    assert any(n["text"] == "*Last note under the table." for n in notes)
+    assert not any("7.5.4" in n["text"] for n in notes)            # a section title is not a note
+
+
+def test_is_code_format():
+    from design_ingest.faults import is_code
+
+    for ok in ("0103", "3504", "39", "264-283", "59, 70-74, 76-83", "E01", "F-102"):
+        assert is_code(ok), ok
+    for bad in ("*Depending", "Depending", "7.5.4 Error numbers", "Note", "*1", "", "-"):
+        assert not is_code(bad), bad

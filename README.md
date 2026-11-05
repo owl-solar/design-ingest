@@ -37,7 +37,7 @@ datasheets; tender requirements) with Claude, validated with pydantic.
 pip install -e path/to/design-ingest
 
 # in another project: pinned version from GitHub
-pip install "design-ingest @ git+https://github.com/owl-solar/design-ingest@v0.5.0"
+pip install "design-ingest @ git+https://github.com/owl-solar/design-ingest@v0.5.1"
 
 # extras
 pip install -e "path/to/design-ingest[llm]"     # LLM extraction (anthropic)

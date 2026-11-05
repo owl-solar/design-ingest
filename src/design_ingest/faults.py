@@ -61,6 +61,7 @@ _BOTTOM_MARGIN = 0.07      # share of the page height at the bottom that is foot
 _PAD = 3.0                 # columns start this far left of their heading
 _YTOL = 1.2                # rules this close (points) are the same rule
 _MAX_EXPAND = 3000
+_NOTE_LINE_GAP = 1.6       # a following line belongs to a footnote when it is closer than this many line heights
 _HEADING_BLOCK = 20.0      # a heading's top rule is at most this far above its text (points)
 
 
@@ -146,22 +147,48 @@ def read_page(page_no: int, words: list[dict], edges: list[dict], height: float,
     """
     headers = [header] if isinstance(header, dict) else list(header)
     y_end = height * (1 - _BOTTOM_MARGIN)
-    res: dict[str, Any] = {"page": page_no, "cells": [], "tail": None, "warnings": []}
+    res: dict[str, Any] = {"page": page_no, "cells": [], "tail": None, "warnings": [], "notes": []}
     for n, h in enumerate(headers):
         last = n == len(headers) - 1
         stop = y_end if last else headers[n + 1]["top"] - 1
         if h.get("legend"):
             continue
-        cells, open_cell, warns, last_rule = _read_table(page_no, words, edges, h, stop, tail and last)
+        cells, open_cell, warns, bounds = _read_table(page_no, words, edges, h, stop, tail and last)
         # The last rule above the heading of the next table is the top of its heading block: what lies
         # between the last row and that rule (a section title, a footnote) is not a row.
-        if not last and cells and 0 <= headers[n + 1]["top"] - last_rule <= _HEADING_BLOCK:
+        if not last and cells and len(bounds) >= 2 and 0 <= headers[n + 1]["top"] - bounds[-1] <= _HEADING_BLOCK:
             cells.pop()
+            res["notes"] += _notes(words, bounds[-2], bounds[-1], page_no)
+        elif bounds and not (tail and last):       # text under the table: footnotes
+            res["notes"] += _notes(words, bounds[-1], stop, page_no)
         res["cells"].extend(cells)
         res["warnings"].extend(m for k, m in warns if k is None or k < len(cells))
         if open_cell is not None:
             res["tail"] = open_cell
     return res
+
+
+def _notes(words: list[dict], a: float, b: float, page_no: int) -> list[dict[str, Any]]:
+    """Footnotes between two y positions: a line that starts with ``*`` and the lines right below it.
+
+    Only the text is kept; what a note says about the table (for example a range of codes) is not
+    interpreted. Section titles ("7.5.4 ...") and other text are not notes."""
+    ws = [w for w in words if a <= (w["top"] + w["bottom"]) / 2 < b]
+    lines = _lines(ws, tol=2.5)
+    out, cur, prev = [], None, None
+    for ln in lines:
+        text = " ".join(w["text"] for w in ln)
+        height = max(w["bottom"] - w["top"] for w in ln)
+        if text.startswith("*"):
+            cur = [ln]
+            out.append(cur)
+        elif cur is not None and prev is not None and ln[0]["top"] - prev[0]["top"] < _NOTE_LINE_GAP * height \
+                and not re.match(r"^\d+(\.\d+)+\s", text):
+            cur.append(ln)
+        else:
+            cur = None
+        prev = ln
+    return [{"text": _join(c)[0], "page": page_no} for c in out]
 
 
 def _read_table(page_no, words, edges, header, y_end, tail):
@@ -170,7 +197,7 @@ def _read_table(page_no, words, edges, header, y_end, tail):
     rules = _rules(edges)
     code_b = _boundaries(rules, [cx], y0, y_end)
     if len(code_b) < 2:
-        return [], None, [(None, f"fault table on p.{page_no} has no row rules: not extracted")], 0.0
+        return [], None, [(None, f"fault table on p.{page_no} has no row rules: not extracted")], []
 
     # extra columns: the sub-headings between the header and the first row (S1 S2 R), else the heading itself
     extra: list[tuple[str, float]] = []
@@ -225,7 +252,7 @@ def _read_table(page_no, words, edges, header, y_end, tail):
                 cell["extra"][name] = words_ or []
         cells.append(cell)
     open_cell = cells.pop() if tail else None
-    return cells, open_cell, warns, code_b[-1]
+    return cells, open_cell, warns, code_b
 
 
 def _link(spans, mspans) -> list[tuple[list[int], bool, bool]]:
@@ -328,6 +355,11 @@ def _ranges(code: str) -> list[list[int]] | None:
     return out
 
 
+def is_code(code: str) -> bool:
+    """A code has a digit, no word of four letters or more and does not start with ``*`` (a footnote)."""
+    return bool(re.search(r"\d", code)) and not re.search(r"[A-Za-z]{4,}", code) and not code.startswith("*")
+
+
 def expand(code_ranges: list[list[int]], limit: int = _MAX_EXPAND) -> list[int]:
     """All numbers of ``code_ranges`` (capped), for search."""
     out: list[int] = []
@@ -341,23 +373,29 @@ def expand(code_ranges: list[list[int]], limit: int = _MAX_EXPAND) -> list[int]:
 
 
 # ---------------------------------------------------------------- whole document
-def build_records(pages: list[dict[str, Any]], vocab: set[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
-    """Records from ``read_page`` results of the table pages, in page order."""
+def build_records(pages: list[dict[str, Any]], vocab: set[str] | None = None,
+                  notes: list[dict[str, Any]] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
+    """Records from ``read_page`` results of the table pages, in page order.
+
+    Footnotes under the tables and rows whose "code" is not a code are appended to ``notes``
+    (``{"text", "page"}``): nothing the table says is dropped without trace."""
+    notes = notes if notes is not None else []
     warnings: list[str] = []
     records: list[dict[str, Any]] = []
     carry: dict | None = None  # open row at the bottom of the previous page: {"cell", "page"}
     prev = None
     for pg in pages:
         warnings.extend(pg["warnings"])
+        notes.extend(pg.get("notes", []))
         consecutive = prev is not None and pg["page"] == prev + 1
         if carry is not None and not consecutive:
-            _emit(records, carry["cell"], carry["page"], carry["page"], warnings)
+            _emit(records, carry["cell"], carry["page"], carry["page"], warnings, notes)
             carry = None
         for k, c in enumerate(pg["cells"]):
             first = pg["page"]
             if k == 0 and carry is not None:
                 if carry["cell"]["code"] and c["code"]:      # two rows: the open one was complete
-                    _emit(records, carry["cell"], carry["page"], carry["page"], warnings)
+                    _emit(records, carry["cell"], carry["page"], carry["page"], warnings, notes)
                 else:
                     c, first = _merge(carry["cell"], c), carry["page"]
                 carry = None
@@ -365,13 +403,13 @@ def build_records(pages: list[dict[str, Any]], vocab: set[str] | None = None) ->
                 records[-1]["_extra"].append(c["meas"])       # the rest of the previous row's measures
                 records[-1]["page_end"] = pg["page"]
                 continue
-            _emit(records, c, first, pg["page"], warnings)
+            _emit(records, c, first, pg["page"], warnings, notes)
         t = pg["tail"]
         if t is not None and (t["code"] or t["name"] or t["meas"]):
             carry = {"cell": t, "page": pg["page"]}
         prev = pg["page"]
     if carry is not None:  # the table ends with an open row and nothing follows
-        _emit(records, carry["cell"], carry["page"], carry["page"], warnings)
+        _emit(records, carry["cell"], carry["page"], carry["page"], warnings, notes)
     return _finish(records, vocab), warnings
 
 
@@ -382,8 +420,17 @@ def _merge(a: dict, b: dict) -> dict:
             "shared": a["shared"] or b["shared"]}
 
 
-def _emit(records, c, page, page_end, warnings):
+def _emit(records, c, page, page_end, warnings, notes):
     code, code_raw = _code_text(c["code"])
+    if code and not is_code(code):
+        # a footnote or a caption inside the ruled area: keep the text as a note, not as a record
+        words = c["code"] + c["name"] + (c["meas"] or [])
+        text = _join(_lines(words))[0]
+        if text.startswith("*"):
+            notes.append({"text": text, "page": page_end})
+        elif text:
+            warnings.append(f"fault table on p.{page_end}: a row with the non-code '{code[:20]}' was left out")
+        return
     if not code:
         if c["name"] or c["meas"]:
             warnings.append(f"fault table on p.{page_end}: a row without a code was left out")
