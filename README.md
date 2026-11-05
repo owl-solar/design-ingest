@@ -9,12 +9,12 @@ repowering, O&M Copilot), so each project does not re-implement file parsing.
 
 | Format | What you get |
 |---|---|
-| **PDF** | text per page, tables, pages without text layer flagged, sheet sizes in mm |
+| **PDF** | text per page, tables (section rows folded into keys, no duplicate text), pages without text layer flagged, sheet sizes in mm; **CAD sheets (A3+)**: title block, module table counts and total, coordinates, transformer stations in `summary` |
 | **DOCX** | paragraphs with their heading path (`4 Technical > 4.2 BESS`), tables |
 | **XLSX / CSV** | every sheet as a table; CSV encoding, delimiter, metadata lines and units row (PVsyst/SCADA exports) detected |
 | **DXF / DWG** | block counts incl. nested blocks (tables × modules), block attributes as tables, title block, text per layer, line length and closed areas per layer in m / m², dimensions, layers |
 | **KML / KMZ** | placemarks with folder, description, properties; polygon area (ha), line length (m), points |
-| **PVsyst .PAN / .OND** | full parameter tree + clean summary (Pnom, Voc, Isc, temperature coefficients, MPPT window, efficiency, IAM / efficiency profiles) |
+| **PVsyst .PAN / .OND** | full parameter tree + clean summary (Pnom, Voc, Isc, temperature coefficients, MPPT window, efficiency, Gamma, LID, low-irradiance and IAM / efficiency profiles) |
 
 Optional: **LLM extraction** into typed schemas (module, inverter, battery
 datasheets; tender requirements) with Claude, validated with pydantic.

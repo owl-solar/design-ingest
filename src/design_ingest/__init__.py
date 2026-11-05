@@ -10,7 +10,7 @@
 from .core import ingest, ingest_dir, register, supported_extensions
 from .schema import Chunk, Document, ParseError, Table
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def extract(*args, **kwargs):

@@ -6,7 +6,7 @@ holds the main parameters with clear names and units, so downstream code does
 not need to know PVsyst key names.
 
 PVsyst units kept as in the file: muISC in mA/°C, muVocSpec in mV/°C,
-muPmpReq in %/°C, PNomConv / PMaxOUT / PNomDC in kW.
+muPmpReq in %/°C, low_irradiance_rel_eff_pct = [G W/m2, % vs STC], PNomConv / PMaxOUT / PNomDC in kW.
 """
 from __future__ import annotations
 
@@ -127,12 +127,34 @@ def _module_summary(obj: dict) -> dict:
         "height_m": _get(com, "Height"),
         "depth_m": _get(com, "Depth"),
         "weight_kg": _get(com, "Weight"),
+        "gamma": _get(obj, "Gamma"),
+        "mu_gamma_per_c": _get(obj, "muGamma"),
+        "submodule_layout": _get(obj, "SubModuleLayout"),
+        "vmax_ul_v": _get(obj, "VMaxUL"),
+        "lid_loss_pct": _get(obj, "LIDLoss"),
+        "r_shunt_zero_irr_ohm": _get(obj, "Rp_0"),
+        "r_shunt_exp": _get(obj, "Rp_Exp"),
+        "cell_area_cm2": _get(obj, "CellArea"),
+        "year_begin": _get(com, "YearBeg"),
     }
     if s["width_m"] and s["height_m"] and s["pnom_w"]:
         s["area_m2"] = round(s["width_m"] * s["height_m"], 4)
         s["efficiency_pct"] = round(s["pnom_w"] / (s["area_m2"] * 1000) * 100, 2)
     if s["voc_v"] and s["mu_voc_mv_per_c"]:
         s["beta_voc_pct_per_c"] = round(s["mu_voc_mv_per_c"] / 1000 / s["voc_v"] * 100, 4)
+    # low-irradiance behaviour: [[G W/m2, relative efficiency %], ...]
+    ops = next((v for k, v in obj.items() if k.startswith("OperPoints") and isinstance(v, dict)), None)
+    if ops:
+        low = []
+        for _, v in sorted((int(k.split("_")[1]), v) for k, v in ops.items() if k.startswith("Point_")):
+            parts = [x.strip() for x in v.split(",")] if isinstance(v, str) else []
+            if len(parts) >= 4:
+                try:
+                    low.append([float(parts[1]), float(parts[3])])
+                except ValueError:
+                    pass
+        if low:
+            s["low_irradiance_rel_eff_pct"] = low
     iam = obj.get("IAM", {})
     prof = next((v for v in iam.values() if isinstance(v, dict)), None) if isinstance(iam, dict) else None
     if prof:
@@ -206,7 +228,7 @@ def _build(path: Path, kind: str) -> dict:
     }
 
 
-@register([".pan"], name="pvsyst_pan", version="1", file_type="pan")
+@register([".pan"], name="pvsyst_pan", version="2", file_type="pan")
 def parse_pan(path: Path) -> dict:
     return _build(path, "pan")
 

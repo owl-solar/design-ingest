@@ -20,6 +20,10 @@ data:
                  - cable/fence/road length per layer
   closed_areas   area of closed polylines per layer (m² if units known)
   dimensions     measured value + text override of DIMENSION entities
+  summary        units, layers, block_inserts, top_blocks, plus (when found)
+                 modules_estimate (from table block names like "3P24...PVBlock"),
+                 length_m_by_group (trenches, mv_cables, lv_ac_cables,
+                 string_cables_dc, fence, roads, ...) and fenced_area_ha
 
 tables:
   one table per block that carries attributes (rows = inserts, cols = tags),
@@ -522,18 +526,69 @@ def parse_dxf_text(text: str, max_inserts: int = 5000) -> dict:
             "lengths": lengths_out,
             "closed_areas": areas_out,
             "dimensions": dimensions,
-            "summary": {
-                "units": units,
-                "layers": len(layers),
-                "block_inserts": n_ins,
-                "top_blocks": {k: v["inserts_model_total"] for k, v in top[:15]},
-            },
+            "summary": _build_summary(units, len(layers), n_ins, top, blocks, lengths_out, areas_out),
         },
         "warnings": warnings,
     }
 
 
-@register([".dxf"], name="dxf", version="1", file_type="dxf")
+_TABLE_BLOCK_RE = re.compile(r"^(\d+)P(\d+)\b.*PVBlock", re.I)  # "3P24@11DEG F FX ID2 PVBlock"
+
+# first matching rule wins; layer names are matched case-insensitively
+_LAYER_GROUPS: list[tuple[str, re.Pattern]] = [
+    (g, re.compile(p, re.I)) for g, p in [
+        ("trenches", r"trench"),
+        ("contours", r"contour"),  # before earthing: "Plex-Earth Contours" is terrain
+        ("earthing", r"earth|ground"),
+        ("hedges", r"hedge"),
+        ("fence", r"fence"),
+        ("roads", r"road"),
+        ("communication", r"communication|fib(er|re)|cctv|sensor"),
+        ("string_cables_dc", r"string cable|\bdc\b.*cable|dc (neg|pos)"),
+        ("mv_cables", r"\bmv\b.*cable|grid connection cable|substa"),
+        ("lv_ac_cables", r"\blv\b.*cable|\bac\b.*cable|inverter.*transformer"),
+    ]
+]
+
+
+def _build_summary(units, n_layers, n_ins, top, blocks, lengths_out, areas_out) -> dict:
+    summary: dict = {
+        "units": units,
+        "layers": n_layers,
+        "block_inserts": n_ins,
+        "top_blocks": {k: v["inserts_model_total"] for k, v in top[:15]},
+    }
+    # module estimate from table block names: NPxx = N rows (portrait) x xx per row
+    by_block = {}
+    for name, v in blocks.items():
+        m = _TABLE_BLOCK_RE.match(name)
+        if m and v["inserts_model_total"]:
+            per = int(m.group(1)) * int(m.group(2))
+            by_block[name] = {"modules_per_table": per, "tables": v["inserts_model_total"]}
+    if by_block:
+        summary["modules_estimate"] = {
+            "total": sum(b["modules_per_table"] * b["tables"] for b in by_block.values()),
+            "basis": "block name NPxx x inserts (estimate, verify against the design)",
+            "by_block": by_block,
+        }
+    # lengths grouped by purpose (m); layers with unknown units are skipped
+    groups: dict[str, float] = {}
+    for layer, v in lengths_out.items():
+        if v["m"] is None:
+            continue
+        for g, rx in _LAYER_GROUPS:
+            if rx.search(layer):
+                groups[g] = groups.get(g, 0.0) + v["m"]
+                break
+    if groups:
+        summary["length_m_by_group"] = {k: round(v, 1) for k, v in sorted(groups.items(), key=lambda kv: -kv[1])}
+    fence = [(k, v["m2"]) for k, v in areas_out.items() if v["m2"] is not None and re.search(r"fence", k, re.I) and not re.search(r"hedge", k, re.I)]
+    if fence:
+        summary["fenced_area_ha"] = round(sum(a for _, a in fence) / 10_000, 2)
+    return summary
+
+
+@register([".dxf"], name="dxf", version="2", file_type="dxf")
 def parse_dxf(path: Path, max_inserts: int = 5000) -> dict:
     return parse_dxf_text(_decode(path.read_bytes()), max_inserts=max_inserts)
 
@@ -570,20 +625,22 @@ def dwg_to_dxf(path: Path, out_dir: Path, version: str = "ACAD2018") -> Path:
             "Install it or set ODA_FILE_CONVERTER to ODAFileConverter.exe; or save the drawing as DXF in AutoCAD."
         )
     with tempfile.TemporaryDirectory() as tmp_in:
-        src = Path(tmp_in) / path.name
+        # safe name + wildcard filter: the last argument is a mask, so names like
+        # "plan [External Issue].dwg" (brackets) would match nothing
+        src = Path(tmp_in) / "input.dwg"
         shutil.copy2(path, src)
-        cmd = [exe, tmp_in, str(out_dir), version, "DXF", "0", "1", path.name]
+        cmd = [exe, tmp_in, str(out_dir), version, "DXF", "0", "1", "*.DWG"]
         try:
             subprocess.run(cmd, check=True, timeout=600, capture_output=True)
         except subprocess.CalledProcessError as e:
             raise ParseError(f"ODA File Converter failed: {e.stderr.decode(errors='replace')[:300]}") from e
-    hits = [p for p in out_dir.glob("*") if p.suffix.lower() == ".dxf" and p.stem.lower() == path.stem.lower()]
+    hits = [p for p in out_dir.glob("*") if p.suffix.lower() == ".dxf"]
     if not hits:
         raise ParseError(f"ODA File Converter produced no DXF for {path.name} (corrupt or newer DWG version?)")
     return hits[0]
 
 
-@register([".dwg"], name="dwg", version="1", file_type="dwg")
+@register([".dwg"], name="dwg", version="3", file_type="dwg")
 def parse_dwg(path: Path, max_inserts: int = 5000) -> dict:
     with tempfile.TemporaryDirectory() as tmp_out:
         dxf = dwg_to_dxf(path, Path(tmp_out))

@@ -19,6 +19,9 @@ def test_pan(samples):
     assert s["efficiency_pct"] == pytest.approx(21.29, abs=0.01)
     assert s["iam_profile"] == [[0.0, 1.0], [60.0, 0.96], [90.0, 0.0]]
     assert d.data["raw"]["Commercial"]["Width"] == 1.134
+    assert s["gamma"] == 1.031 and s["submodule_layout"] == "slTwinHalfCells"
+    assert s["lid_loss_pct"] == 0.29 and s["vmax_ul_v"] == 1500
+    assert s["low_irradiance_rel_eff_pct"] == [[200.0, -1.12], [1000.0, 0.0]]
     assert not d.warnings
 
 
@@ -118,6 +121,33 @@ def test_pdf(samples):
     assert any("without text layer" in w for w in d.warnings)
 
 
+def test_pdf_table_sections_no_duplicate_text(samples):
+    if "pdf_sections" not in samples:
+        pytest.skip("reportlab not installed")
+    d = ingest(samples["pdf_sections"], use_cache=False)
+    rows = d.tables[0].rows
+    assert ["Input > Max V", "1500 V"] in rows and ["Output > Max I", "254 A"] in rows
+    text = next(c.text for c in d.chunks if c.kind == "text")
+    assert "Footnote text" in text and "1500 V" not in text  # table area not repeated in text
+
+
+def test_pdf_drawing_sheet(samples):
+    if "pdf_drawing" not in samples:
+        pytest.skip("reportlab not installed")
+    d = ingest(samples["pdf_drawing"], use_cache=False)
+    assert d.data["drawing_pages"] == [1] and not d.tables
+    s = d.data["summary"]
+    assert s["total_modules"] == 72 * 10 + 24 * 2
+    assert s["coordinates"] == [[51.870492, 5.626461]]
+    assert s["transformer_stations"][0]["kva_each"] == 6000
+    tb = s["title_block"]
+    assert tb["Project"] == "Testfield" and tb["Location"] == "Main street 1, Town, Country"
+    assert tb["Drawn"] == "AB" and tb["Checked"] == "CD" and tb["Scale"] == "1:2000@A1"
+    assert tb["Drawing No"] == "T-101" and tb["Rev"] == "0"
+    assert d.data["rotated_chars_skipped"] == len("ROTATEDNOTE")
+    assert "ROTATEDNOTE" not in d.chunks[0].text
+
+
 def test_cache_and_roundtrip(samples, tmp_path):
     a = ingest(samples["pan"], cache_dir=tmp_path)
     assert list(tmp_path.glob("*.json"))
@@ -150,3 +180,46 @@ def test_table_to_dataframe(samples):
     t = ingest(samples["csv"], use_cache=False).tables[0]
     df = t.to_dataframe()
     assert list(df.columns) == ["date", "GlobHor", "E_Grid", "T_Amb"] and len(df) == 2
+
+
+def test_dwg_converter_call_survives_brackets_in_name(tmp_path, monkeypatch):
+    """The ODA filter argument is a mask: '[...]' in the file name must not reach it."""
+    from design_ingest.parsers import cad
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        (tmp_path / "out").mkdir(exist_ok=True)
+        (tmp_path / "out" / "input.dxf").write_text("0\nEOF\n")
+
+    monkeypatch.setattr(cad, "find_oda_converter", lambda: "oda.exe")
+    monkeypatch.setattr(cad.subprocess, "run", fake_run)
+    src = tmp_path / "plan [External Issue].dwg"
+    src.write_bytes(b"AC1032")
+    dxf = cad.dwg_to_dxf(src, tmp_path / "out")
+    assert dxf.name == "input.dxf"
+    assert calls[0][-1] == "*.DWG" and "[" not in "".join(calls[0])
+
+
+def test_cad_summary_groups_and_module_estimate():
+    from design_ingest.parsers.cad import _build_summary
+
+    blocks = {
+        "3P24@11DEG F FX ID2 PVBlock": {"inserts_model_total": 10},
+        "3P8@11DEG F FX ID3 PVBlock": {"inserts_model_total": 2},
+        "3P24W_area_A": {"inserts_model_total": 99},  # area block, not a table
+    }
+    lengths = {
+        "DETRA MV Cable": {"m": 100.0}, "DETRA MV trench 1.0m wide": {"m": 40.0},
+        "DETRA Fence": {"m": 500.0}, "Hedge (green fence)": {"m": 70.0},
+        "PVcase String Cables": {"m": 900.0}, "DETRA LV AC cable": {"m": 60.0},
+        "Unknown units": {"m": None},
+    }
+    s = _build_summary("m", 7, 3, [], blocks, lengths, {"DETRA Fence": {"m2": 25_000.0}})
+    assert s["modules_estimate"]["total"] == 72 * 10 + 24 * 2
+    assert list(s["modules_estimate"]["by_block"]) == ["3P24@11DEG F FX ID2 PVBlock", "3P8@11DEG F FX ID3 PVBlock"]
+    g = s["length_m_by_group"]
+    assert g["mv_cables"] == 100 and g["trenches"] == 40 and g["fence"] == 500 and g["hedges"] == 70
+    assert g["string_cables_dc"] == 900 and g["lv_ac_cables"] == 60
+    assert s["fenced_area_ha"] == 2.5

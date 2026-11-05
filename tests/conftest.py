@@ -42,6 +42,11 @@ PAN_TEXT = """PVObject_=pvModule
   RSerie=0.180
   muPmpReq=-0.340
   VMaxIEC=1500
+  Gamma=1.031
+  muGamma=-0.0002
+  SubModuleLayout=slTwinHalfCells
+  LIDLoss=0.29
+  VMaxUL=1500
 
   PVObject_IAM=pvIAM
     Flags=$00
@@ -55,6 +60,11 @@ PAN_TEXT = """PVObject_=pvModule
       Point_3=90.0,0.00000
     End of TCubicProfile
   End of PVObject pvIAM
+
+  OperPoints, list of=2 tOperPoint
+    Point_1=False,200,25.0,-1.12,0.00,0.000,0.000,0.00
+    Point_2=False,1000,25.0,0.00,0.00,0.000,0.000,0.00
+  End of List OperPoints
 End of PVObject pvModule
 """
 
@@ -242,6 +252,30 @@ def samples(tmp_path_factory) -> dict[str, Path]:
              Paragraph("Warranty 30 years linear", st["Normal"]), PageBreak(), HRFlowable(width="100%")]
         )
         out["pdf"] = d / "datasheet.pdf"
+
+        # table with section rows + text above and below
+        tb2 = Table([["Type", "X1"], ["Input", ""], ["Max V", "1500 V"], ["Output", ""], ["Max I", "254 A"]])
+        tb2.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black)]))
+        SimpleDocTemplate(str(d / "sections.pdf"), pagesize=A4).build(
+            [Paragraph("Inverter X1", st["Title"]), tb2, Paragraph("Footnote text", st["Normal"])]
+        )
+        out["pdf_sections"] = d / "sections.pdf"
+
+        # A1 sheet like a CAD plot: legend, title block, rotated text
+        from reportlab.pdfgen import canvas
+
+        cv = canvas.Canvas(str(d / "layout.pdf"), pagesize=(841 / 25.4 * 72, 594 / 25.4 * 72))
+        y = 500
+        for line in ["Table of 72 modules (10 pcs.)", "Table of 24 modules (2 pcs.)",
+                     "Transformer station (2x6000 kVA)", "Project: Testfield", "Location: Main street 1,",
+                     "Town, Country", "51.870492°, 5.626461°", "Drawn: AB Checked: CD",
+                     "Scale: 1:2000@A1 Date: 30/10/24", "Drawing No: T-101 Rev: 0"]:
+            cv.drawString(100, y, line.replace("\u00b0", "°"))
+            y -= 20
+        cv.saveState(); cv.translate(600, 300); cv.rotate(90); cv.drawString(0, 0, "ROTATEDNOTE"); cv.restoreState()
+        cv.rect(300, 100, 200, 100)
+        cv.save()
+        out["pdf_drawing"] = d / "layout.pdf"
     except ImportError:
         pass
     return out
