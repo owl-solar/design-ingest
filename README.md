@@ -89,24 +89,35 @@ Results are cached by file content (`~/.cache/design_ingest`, or
 
 ### LLM extraction (optional)
 
+Everything above works offline and without a model. A model is for what rules cannot
+do: scans, free text, equipment the rules do not know.
+
 ```python
 from design_ingest import extract
 from design_ingest.schemas import ModuleDatasheet, TenderRequirements
 
-ds = extract("module_datasheet.pdf", ModuleDatasheet)
+ds = extract("module_datasheet.pdf", ModuleDatasheet, allow_external=True)
 ds.variants[0].pmax_w, ds.temp_coeff_pmax_pct_per_c
 
-reqs = extract("tender.pdf", TenderRequirements, instructions="Focus on BESS technical requirements")
+reqs = extract("tender.pdf", TenderRequirements, allow_external=True,
+               instructions="Focus on BESS technical requirements")
 [r for r in reqs.requirements if r.mandatory]
 
-extract("drawing.pdf", MySchema, vision=True)   # send the PDF itself: sees drawings and charts
+extract("drawing.pdf", MySchema, vision=True, allow_external=True)   # sends the PDF itself
 ```
 
-Needs `ANTHROPIC_API_KEY` (API billing is separate from a Claude.ai
-subscription). Default model is small and cheap; override with `model=` or
-`DESIGN_INGEST_MODEL`. Any pydantic model works as a schema. Extraction results
-are cached too. **Confidential documents** are sent to the API — check with the
-document owner first.
+Needs `pip install "design-ingest[llm]"` and `ANTHROPIC_API_KEY` (API billing is separate
+from a Claude.ai subscription). Default model `claude-haiku-5-5` (small and cheap);
+override with `model=` or `DESIGN_INGEST_MODEL`. Any pydantic model works as a schema.
+Results are cached by file hash, so a repeat costs nothing.
+
+**Confidential documents stay on the computer unless you say otherwise.** Sending content to
+the API is blocked by default (`ExternalCallBlocked`). Allow it per call
+(`allow_external=True`, CLI `--allow-external`) or with `DESIGN_INGEST_ALLOW_EXTERNAL=1`,
+and only for documents you may share with an external service. Every call is logged to
+`~/.cache/design_ingest/llm_log.jsonl` (file name, hash prefix, size, tokens; never the
+content): `design-ingest llm-log`. `DESIGN_INGEST_TOKEN_BUDGET` caps the tokens per UTC day.
+Set a spend limit in the API console as the hard stop.
 
 ### Command line
 
@@ -116,7 +127,8 @@ design-ingest parse layout.dxf            # summary + warnings
 design-ingest parse spec.docx --md        # readable Markdown
 design-ingest parse site.kmz --json site.json
 design-ingest dir tender_package/ --out parsed/ --md
-design-ingest extract datasheet.pdf --schema module
+design-ingest extract datasheet.pdf --schema module --allow-external   # sends the document to the API
+design-ingest llm-log                                     # what was sent so far
 design-ingest parse layout.dxf --profile office.json      # naming conventions of one design office
 design-ingest eval my_files/                              # check results against my_files/expected.json
 ```

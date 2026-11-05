@@ -18,6 +18,9 @@ schema + model + instructions, so repeated runs cost nothing.
 Requires ANTHROPIC_API_KEY in the environment (API billing is separate from a
 Claude.ai subscription). Model: ``DESIGN_INGEST_MODEL`` or argument; default
 is a small, cheap model.
+
+Sending content is blocked unless ``allow_external=True`` (or DESIGN_INGEST_ALLOW_EXTERNAL=1);
+every call is logged without content and can be capped: see ``design_ingest.llm``.
 """
 from __future__ import annotations
 
@@ -31,11 +34,12 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from .core import default_cache_dir, ingest
+from .llm import guarded_create, require_allowed
 from .schema import Document, ParseError
 
 T = TypeVar("T", bound=BaseModel)
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-haiku-5-5"
 SYSTEM = (
     "You extract engineering data from documents for a PV/BESS engineer. "
     "Use only values stated in the document. If a value is missing, leave it null - never estimate. "
@@ -60,6 +64,7 @@ def extract(
     max_tokens: int = 8192,
     use_cache: bool = True,
     client=None,
+    allow_external: bool | None = None,
 ) -> T:
     doc = source if isinstance(source, Document) else ingest(source)
     model = model or os.environ.get("DESIGN_INGEST_MODEL", DEFAULT_MODEL)
@@ -94,6 +99,7 @@ def extract(
             body = body[:max_chars] + f"\n\n[... truncated: document is {len(body)} chars, sent first {max_chars}]"
         content = [{"type": "text", "text": f"<document name=\"{doc.filename}\">\n{body}\n</document>\n\n{task}"}]
 
+    require_allowed(f"extract:{schema.__name__}", allow_external)  # before a client is even created
     if client is None:
         try:
             import anthropic
@@ -101,7 +107,15 @@ def extract(
             raise ImportError("LLM extraction needs: pip install design-ingest[llm]") from e
         client = anthropic.Anthropic()
     tool = {"name": "record", "description": f"Record the extracted {schema.__name__}.", "input_schema": schema_json}
-    resp = client.messages.create(
+    sent_kind, sent_amount = ("pdf", len(raw)) if vision else ("text", len(body))
+    resp = guarded_create(
+        client,
+        purpose=f"extract:{schema.__name__}",
+        file=doc.filename,
+        sha256=doc.sha256,
+        kind=sent_kind,
+        amount=sent_amount,
+        allow_external=allow_external,
         model=model,
         max_tokens=max_tokens,
         system=SYSTEM,

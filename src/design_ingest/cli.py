@@ -5,6 +5,11 @@
     design-ingest dir FOLDER --out OUT_DIR [--md]
     design-ingest extract FILE --schema module|inverter|battery|tender [--vision] [--out OUT.json]
     design-ingest eval FOLDER [--expected expected.json] [--snapshot OUT.json]
+    design-ingest llm-log
+
+``extract`` sends document content to the Anthropic API: it is blocked unless you pass
+``--allow-external`` (or set DESIGN_INGEST_ALLOW_EXTERNAL=1). ``llm-log`` shows what was
+sent so far (file names, sizes, tokens; never the content).
 
 ``parse`` and ``dir`` take ``--profile FILE`` (naming conventions of drawings, see
 design_ingest.profiles). ``eval`` checks results against values you know.
@@ -63,8 +68,12 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("file")
     e.add_argument("--schema", required=True, choices=["module", "inverter", "battery", "tender"])
     e.add_argument("--vision", action="store_true", help="send the PDF itself (sees drawings/charts)")
+    e.add_argument("--allow-external", action="store_true",
+                   help="confirm that this document may be sent to the Anthropic API")
     e.add_argument("--model")
     e.add_argument("--out")
+
+    sub.add_parser("llm-log", help="calls made to the external model API (files, sizes, tokens)")
 
     a = ap.parse_args(argv)
     try:
@@ -101,18 +110,29 @@ def main(argv: list[str] | None = None) -> int:
 
             return run(Path(a.folder), Path(a.expected) if a.expected else None, use_cache=not a.no_cache,
                        profile=a.profile, snapshot_to=Path(a.snapshot) if a.snapshot else None)
+        elif a.cmd == "llm-log":
+            from .llm import log_path, summarize
+
+            info = summarize()
+            print(f"log: {log_path()}")
+            print(f"{info['calls']} calls, {info['input_tokens']} input + {info['output_tokens']} output tokens")
+            for day, d in sorted(info["per_day"].items()):
+                print(f"  {day}: {d['calls']} calls, {d['input_tokens']} in, {d['output_tokens']} out")
+            for f in info["files"]:
+                print(f"  file sent: {f}")
         elif a.cmd == "extract":
             from .extract import extract
             from .schemas import SCHEMAS
 
-            res = extract(a.file, SCHEMAS[a.schema], vision=a.vision, model=a.model)
+            res = extract(a.file, SCHEMAS[a.schema], vision=a.vision, model=a.model,
+                          allow_external=True if a.allow_external else None)
             js = res.model_dump_json(indent=2)
             if a.out:
                 Path(a.out).write_text(js, encoding="utf-8")
                 print(f"wrote {a.out}")
             else:
                 print(js)
-    except (ParseError, FileNotFoundError, ImportError) as err:
+    except (ParseError, FileNotFoundError, ImportError, PermissionError, RuntimeError) as err:
         print(f"error: {err}", file=sys.stderr)
         return 1
     return 0
