@@ -162,7 +162,7 @@ def test_cli_download_model_and_hybrid_error(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("DESIGN_INGEST_CACHE", str(tmp_path / "c"))
     monkeypatch.setattr(embeddings, "_fastembed", lambda local_only: None)
     assert main(["download-model"]) == 0
-    assert "130 MB" in capsys.readouterr().out
+    assert "65 MB" in capsys.readouterr().out
 
     def no_model(local_only):
         raise ValueError("missing")

@@ -85,7 +85,7 @@ def main(argv: list[str] | None = None) -> int:
     sr.add_argument("--mode", choices=["bm25", "hybrid"], default="bm25",
                     help="hybrid = BM25 + embeddings (extra [embeddings] and download-model needed)")
 
-    sub.add_parser("download-model", help="download the embedding model for --mode hybrid (about 130 MB, network)")
+    sub.add_parser("download-model", help="download the embedding model for --mode hybrid (about 65 MB, network)")
 
     q = sub.add_parser("ask", help="answer a question from the best passages, with checked citations (uses the API)")
     q.add_argument("path")

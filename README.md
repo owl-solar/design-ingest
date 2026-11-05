@@ -151,7 +151,7 @@ permission, log and budget rules as for `extract` apply.
 work" vs "the fans start to run"). `mode="hybrid"` adds a ranking by embedding similarity and merges both
 (reciprocal rank fusion, k=60, top 50 of each); BM25 still decides for exact codes and numbers. It needs
 `pip install "design-ingest[embeddings]"` (fastembed, ONNX, no PyTorch) and a model that you download once,
-on purpose: `design-ingest download-model` (BAAI/bge-small-en-v1.5, about 130 MB, folder
+on purpose: `design-ingest download-model` (BAAI/bge-small-en-v1.5, about 65 MB, folder
 `~/.cache/design_ingest/models` or `DESIGN_INGEST_MODEL_DIR`). Without the model `hybrid` stops with an error that
 names this command; it never downloads by itself. Passage vectors are cached in
 `~/.cache/design_ingest/vectors.sqlite`. Hits get `bm25_rank` and `embedding_rank`. The default `mode="bm25"` is

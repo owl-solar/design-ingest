@@ -3,7 +3,7 @@
 Needs the extra ``embeddings`` (``pip install "design-ingest[embeddings]"``: fastembed, ONNX, no PyTorch).
 The core works without it and without any model.
 
-* Model: ``BAAI/bge-small-en-v1.5`` (English), about 130 MB, **downloaded only on request**:
+* Model: ``BAAI/bge-small-en-v1.5`` (English), about 65 MB, **downloaded only on request**:
   ``design-ingest download-model`` or ``design_ingest.embeddings.download_model()``. That is a network
   request to the model host (Hugging Face); no document is sent. ``hybrid`` never downloads by itself:
   without the model it raises ``EmbeddingsUnavailable`` that names the command.
@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Protocol, Sequence
 
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
-MODEL_SIZE_MB = 130
+MODEL_SIZE_MB = 65
 
 
 class EmbeddingsUnavailable(RuntimeError):

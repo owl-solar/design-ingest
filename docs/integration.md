@@ -65,7 +65,7 @@ merges BM25 with a ranking by embedding similarity (reciprocal rank fusion, k=60
 `bm25_rank` and `embedding_rank` to every hit. `mode="bm25"` is the default and its results do not change.
 
 - Install: `pip install "design-ingest[embeddings] @ git+...@v0.6.0"` (fastembed, ONNX, no PyTorch).
-- The model `BAAI/bge-small-en-v1.5` (English, about 130 MB) is **not** downloaded by `hybrid`. Run
+- The model `BAAI/bge-small-en-v1.5` (English, about 65 MB) is **not** downloaded by `hybrid`. Run
   `design-ingest download-model` (Python: `design_ingest.embeddings.download_model()`) once. Without it `hybrid`
   raises `EmbeddingsUnavailable` that names this command. Folder: `DESIGN_INGEST_MODEL_DIR`, default
   `~/.cache/design_ingest/models`.
