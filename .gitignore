@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.cache/
+.env
+# real project documents are often confidential: keep them out of git
+data/
+samples/private/
