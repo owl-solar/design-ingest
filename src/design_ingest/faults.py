@@ -24,13 +24,20 @@ cross *it*: when two records share one measures cell (no rule between them in th
 get the same measures and ``shared_measures``. When the cut is ambiguous (several records over
 several measures cells) the measures are left out and a warning is added.
 
+More than one table can stand on a page. Headings between the name and the action heading ("Inverter
+behavior", sub-headings S1 S2 R on the next line) are extra columns, read into ``columns``; every column
+is cut by its own rules and linked to the code cells by overlap, so a code with its own code cell can share
+the other cells with the next code. A bullet sign starts a step of its own (and is dropped), a ``*`` after
+the code goes to ``code_marker``. The span between the last row and the heading block of the next table is
+not a row. A heading with S1 S2 R written inline is a "how to read" figure and is skipped.
+
 A table page without such rules is not read at all (a warning says so): guessing row borders
 from text positions would put steps under the wrong code.
 
 Joining wrapped text: only a line that ends in a soft hyphen (U+00AD, what Word and InDesign
 write when they hyphenate) is joined to the next one without a space, and the marker is dropped;
 an ASCII hyphen at the end of a line followed by a lowercase letter is joined without a space and
-kept. Every other line break becomes a space, so two different words are never glued; a word
+kept, unless the two halves together are a word that occurs in the document (``vocab``): then the hyphen goes. Every other line break becomes a space, so two different words are never glued; a word
 broken without any marker stays broken ("Overfrequen cy") and is visible in ``raw``.
 A row that continues on the next page is joined to its first part (``page_end``).
 """
@@ -43,7 +50,7 @@ SOFT_HYPHEN = "­"
 _DASHES = "‐‑‒–—−­"
 
 _CODE_H = r"(?:fault|error|alarm|warning|event)?\s*(?:code|no\.?|number|id)"
-_NAME_H = r"(?:fault|error|alarm|warning|event)?\s*(?:name|description|message|text|type)"
+_NAME_H = r"(?:fault|error|alarm|warning|event)?\s*(?:name|description|message|text|type|explanation)"
 _ACT_H = (r"(?:(?:corrective|remedial|recommended|troubleshooting)\s+)?"
           r"(?:measures?|actions?|steps?)|remedy|remedies|solutions?|troubleshooting")
 _HEADER = [re.compile(r"^" + p + r"$", re.I) for p in (_CODE_H, _NAME_H, _ACT_H)]
@@ -54,6 +61,7 @@ _BOTTOM_MARGIN = 0.07      # share of the page height at the bottom that is foot
 _PAD = 3.0                 # columns start this far left of their heading
 _YTOL = 1.2                # rules this close (points) are the same rule
 _MAX_EXPAND = 3000
+_HEADING_BLOCK = 20.0      # a heading's top rule is at most this far above its text (points)
 
 
 # ---------------------------------------------------------------- page geometry
@@ -68,23 +76,44 @@ def _lines(words: list[dict], tol: float = 2.5) -> list[list[dict]]:
     return [sorted(r, key=lambda w: w["x0"]) for r in out]
 
 
-def find_header(words: list[dict]) -> dict | None:
-    """Columns of a fault table header on this page, or None.
+def find_headers(words: list[dict]) -> list[dict]:
+    """Fault table headings on this page (a page can hold several tables), top to bottom.
 
-    ``{"x": (code_x, name_x, action_x), "top": y, "bottom": y}`` (x = left edge of each heading).
+    ``{"x": (code_x, name_x, action_x), "extra": [(label, x)], "top": y, "bottom": y}`` where x is the
+    left edge of each heading. Headings between the name and the action heading (SMA: "Inverter
+    behavior", with S1 / S2 / R below it) are ``extra`` columns; their sub-headings are looked up
+    in ``read_page``.
     """
+    out = []
     for line in _lines(words, tol=3.0):
         toks = [(w["text"], w) for w in line]
-        # try every split of the line's words into three consecutive headings
         n = len(toks)
+        found = None
         for i in range(1, n - 1):
             for j in range(i + 1, n):
-                parts = [toks[:i], toks[i:j], toks[j:]]
-                if all(rx.match(" ".join(t for t, _ in p).strip()) for rx, p in zip(_HEADER, parts)):
-                    xs = tuple(p[0][1]["x0"] for p in parts)
-                    return {"x": xs, "top": min(w["top"] for _, w in toks),
-                            "bottom": max(w["bottom"] for _, w in toks)}
-    return None
+                for k in range(j, min(n, j + 4)):          # words j..k-1: optional extra heading
+                    parts = [toks[:i], toks[i:j], toks[k:]]
+                    if all(rx.match(" ".join(t for t, _ in pt).strip()) for rx, pt in zip(_HEADER, parts)):
+                        extra = toks[j:k]
+                        found = {"x": (toks[0][1]["x0"], toks[i][1]["x0"], toks[k][1]["x0"]),
+                                 "extra": [(" ".join(t for t, _ in extra), extra[0][1]["x0"])] if extra else [],
+                                 # S1 S2 R written inline in the heading line: a "how to read" figure, not a table
+                                 "legend": len(extra) >= 2 and all(len(t) <= 2 for t, _ in extra),
+                                 "top": min(w["top"] for _, w in toks), "bottom": max(w["bottom"] for _, w in toks)}
+                        break
+                if found:
+                    break
+            if found:
+                break
+        if found:
+            out.append(found)
+    return out
+
+
+def find_header(words: list[dict]) -> dict | None:
+    """First fault table heading of the page, or None (see ``find_headers``)."""
+    hs = find_headers(words)
+    return hs[0] if hs else None
 
 
 def _rules(edges: list[dict]) -> list[tuple[float, float, float]]:
@@ -105,64 +134,106 @@ def _boundaries(rules, px: list[float], y_min: float, y_max: float) -> list[floa
 
 
 def read_page(page_no: int, words: list[dict], edges: list[dict], height: float,
-              header: dict, tail: bool) -> dict[str, Any]:
-    """Cells of one table page.
+              header, tail: bool) -> dict[str, Any]:
+    """Cells of one table page (``header``: one heading dict or the list from ``find_headers``).
 
     Returns ``{"page", "cells": [...], "tail": cell | None, "warnings": [...]}``. A cell is
-    ``{"code": [words], "name": [words], "meas": [words] | None, "shared": bool}``.
-    ``tail`` (asked for when the table goes on on the next page) is the open row below the
-    last rule. Word ``top`` / ``bottom`` are shifted by ``page_no * 10000`` so that words of
-    several pages keep their reading order when a row is joined across pages.
+    ``{"code": [words], "name": [words], "extra": {label: [words]}, "meas": [words] | None,
+    "shared": bool}``. ``tail`` (asked for when the table goes on on the next page) is the open
+    row below the last rule of the last table. Word ``top`` / ``bottom`` are shifted by
+    ``page_no * 10000`` so that words of several pages keep their reading order when a row is
+    joined across pages.
     """
-    cx, nx, ax = header["x"]
-    x_cut = (cx - _PAD, nx - _PAD, ax - _PAD)
-    y0 = header["bottom"]
+    headers = [header] if isinstance(header, dict) else list(header)
     y_end = height * (1 - _BOTTOM_MARGIN)
-    rules = _rules(edges)
-    left = _boundaries(rules, [cx, nx], y0, y_end)
-    meas = _boundaries(rules, [ax], y0, y_end)
     res: dict[str, Any] = {"page": page_no, "cells": [], "tail": None, "warnings": []}
-    if len(left) < 2:
-        res["warnings"].append(f"fault table on p.{page_no} has no row rules: not extracted")
-        return res
+    for n, h in enumerate(headers):
+        last = n == len(headers) - 1
+        stop = y_end if last else headers[n + 1]["top"] - 1
+        if h.get("legend"):
+            continue
+        cells, open_cell, warns, last_rule = _read_table(page_no, words, edges, h, stop, tail and last)
+        # The last rule above the heading of the next table is the top of its heading block: what lies
+        # between the last row and that rule (a section title, a footnote) is not a row.
+        if not last and cells and 0 <= headers[n + 1]["top"] - last_rule <= _HEADING_BLOCK:
+            cells.pop()
+        res["cells"].extend(cells)
+        res["warnings"].extend(m for k, m in warns if k is None or k < len(cells))
+        if open_cell is not None:
+            res["tail"] = open_cell
+    return res
 
-    body = [w for w in words if y0 <= w["top"] < y_end and w["x0"] >= x_cut[0]]
+
+def _read_table(page_no, words, edges, header, y_end, tail):
+    cx, nx, ax = header["x"]
+    y0 = header["bottom"]
+    rules = _rules(edges)
+    code_b = _boundaries(rules, [cx], y0, y_end)
+    if len(code_b) < 2:
+        return [], None, [(None, f"fault table on p.{page_no} has no row rules: not extracted")], 0.0
+
+    # extra columns: the sub-headings between the header and the first row (S1 S2 R), else the heading itself
+    extra: list[tuple[str, float]] = []
+    if header["extra"]:
+        lo = header["extra"][0][1] - 5
+        sub = [w for w in words if header["bottom"] < w["top"] < code_b[0] and lo <= w["x0"] < ax - _PAD]
+        extra = [(w["text"], w["x0"]) for w in sorted(sub, key=lambda w: w["x0"])] or list(header["extra"])
+    cols = [("code", cx), ("name", nx), *extra, ("meas", ax)]
+    cuts = [x - _PAD for _, x in cols]
+
     off = page_no * 10000.0
-    body = [{**w, "top": w["top"] + off, "bottom": w["bottom"] + off} for w in body]
+    body = [{**w, "top": w["top"] + off, "bottom": w["bottom"] + off}
+            for w in words if y0 <= w["top"] < y_end and w["x0"] >= cuts[0]]
 
     def col(w):
-        return 0 if w["x0"] < x_cut[1] else (1 if w["x0"] < x_cut[2] else 2)
+        return max(i for i, c in enumerate(cuts) if w["x0"] >= c)
 
     def between(a, b):
         return [w for w in body if a + off <= (w["top"] + w["bottom"]) / 2 < b + off]
 
-    spans = list(zip(left[:-1], left[1:]))
-    mspans = list(zip(meas[:-1], meas[1:]))
-    if tail:
-        spans.append((left[-1], y_end))
-        mspans.append((meas[-1] if meas else left[-1], y_end))
-    for (a, b), (touch, shared, unclear) in zip(spans, _link(spans, mspans)):
-        rows = between(a, b)
-        cell: dict[str, Any] = {"code": [w for w in rows if col(w) == 0], "name": [w for w in rows if col(w) == 1],
-                                "shared": shared, "meas": None}
-        if unclear:
-            res["warnings"].append(
-                f"fault table on p.{page_no}: measures cells and code cells do not line up near y={a:.0f}, measures left out")
-        else:
-            lo, hi = min(mspans[m][0] for m in touch), max(mspans[m][1] for m in touch)
-            cell["meas"] = [w for w in between(lo, hi) if col(w) == 2]
-        res["cells"].append(cell)
-    if tail:
-        res["tail"] = res["cells"].pop()
-    return res
+    def spans_of(bounds):
+        sp = list(zip(bounds[:-1], bounds[1:]))
+        if tail:
+            sp.append((bounds[-1] if bounds else code_b[-1], y_end))
+        return sp
+
+    rec_spans = spans_of(code_b)
+    warns: list[str] = []
+    per_col = []                       # for every other column: (label, cell spans, link info per record)
+    for name, x in cols[1:]:
+        sp = spans_of(_boundaries(rules, [x], y0, y_end))
+        per_col.append((name, sp, _link(rec_spans, sp)))
+
+    cells = []
+    for r, (a, b) in enumerate(rec_spans):
+        cell: dict[str, Any] = {"code": [w for w in between(a, b) if col(w) == 0], "name": [], "extra": {},
+                                "meas": None, "shared": False}
+        for ci, (name, sp, link) in enumerate(per_col, start=1):
+            touch, shared, unclear = link[r]
+            if unclear:
+                words_ = None
+                warns.append((r, f"fault table on p.{page_no}: '{name}' cells and code cells do not line up near "
+                                 f"y={a:.0f}, left out"))
+            else:
+                lo, hi = min(sp[m][0] for m in touch), max(sp[m][1] for m in touch)
+                words_ = [w for w in between(lo, hi) if col(w) == ci]
+            if ci == len(per_col):            # the last column is the measures
+                cell["meas"], cell["shared"] = words_, shared
+            elif name == "name" and ci == 1:
+                cell["name"] = words_ or []
+            else:
+                cell["extra"][name] = words_ or []
+        cells.append(cell)
+    open_cell = cells.pop() if tail else None
+    return cells, open_cell, warns, code_b[-1]
 
 
 def _link(spans, mspans) -> list[tuple[list[int], bool, bool]]:
-    """Per record span: (measures spans it overlaps, shares one with another record?, unclear?).
+    """Per record span: (cell spans of another column it overlaps, shares one with another record?, unclear?).
 
-    One measures cell over several records is a merged cell: the text belongs to all of them.
-    A record over several measures cells that are also shared with other records cannot be
-    resolved without guessing: unclear. No rules in the measures column at all: unclear."""
+    One cell over several records is a merged cell: the text belongs to all of them.
+    A record over several cells that are also shared with other records cannot be
+    resolved without guessing: unclear. No rules in that column at all: unclear."""
     touch = [[j for j, (ma, mb) in enumerate(mspans) if min(b, mb) - max(a, ma) > 1.0] for a, b in spans]
     users: dict[int, int] = {}
     for t in touch:
@@ -176,8 +247,12 @@ def _link(spans, mspans) -> list[tuple[list[int], bool, bool]]:
 
 
 # ---------------------------------------------------------------- text of cells
-def _join(lines: list[list[dict]]) -> tuple[str, str]:
-    """(joined text, raw text) of cell lines; see the module docstring for the join rule."""
+def _join(lines: list[list[dict]], vocab: set[str] | None = None) -> tuple[str, str]:
+    """(joined text, raw text) of cell lines; see the module docstring for the join rule.
+
+    ``vocab``: words (lower case) of the document. An ASCII hyphen at the end of a line is dropped
+    when the two halves together are a word of the document ("reconnec-" + "tion"), else kept
+    ("DC-" + "side")."""
     texts = [" ".join(w["text"] for w in ln).strip() for ln in lines]
     texts = [t for t in texts if t]
     raw = "\n".join(texts)
@@ -188,29 +263,42 @@ def _join(lines: list[list[dict]]) -> tuple[str, str]:
         elif out.endswith(SOFT_HYPHEN):
             out = out[:-1] + t
         elif re.search(r"[A-Za-z0-9]-$", out) and t[:1].islower():
-            out += t
+            a = re.search(r"([A-Za-z]+)-$", out)
+            b = re.match(r"[a-z]+", t)
+            if vocab and a and b and (a.group(1) + b.group(0)).lower() in vocab:
+                out = out[:-1] + t
+            else:
+                out += t
         else:
             out += " " + t
     return out.replace(SOFT_HYPHEN, "").strip(), raw
 
 
+_SPLIT = re.compile(r"(?:(?<=\s)|^)(?=\d{1,2}\.\s+\S|\*\S|[•●▪‣]\s)")
+
+
 def _steps(text: str) -> list[str]:
-    """Split a measures text at "1." "2." ... markers; text before the first marker is its own item."""
-    parts = re.split(r"(?:(?<=\s)|^)(?=\d{1,2}\.\s+\S|\*\S)", text)  # a footnote "*..." is its own item
+    """Split a measures text into items.
+
+    Numbered steps "1." "2." ... (only in sequence; a stray "3." inside a sentence is not a step), bullets
+    (the bullet sign is dropped) and footnotes starting with "*" are items of their own; text before the
+    first marker is an item too."""
     items: list[str] = []
     expect = 1
-    for p in parts:
+    for p in _SPLIT.split(text):
         p = p.strip()
         if not p:
             continue
         m = _STEP.match(p)
-        if m and int(m.group(1)) == expect:
+        if p[0] in "•●▪‣":
+            items.append(p[1:].strip())
+        elif m and int(m.group(1)) == expect:
             items.append(p)
             expect += 1
         elif p.startswith("*") or not items:
             items.append(p)
-        elif items:
-            items[-1] = (items[-1] + " " + p).strip()   # a stray "3. " inside a sentence is not a step
+        else:
+            items[-1] = (items[-1] + " " + p).strip()
     return items
 
 
@@ -253,7 +341,7 @@ def expand(code_ranges: list[list[int]], limit: int = _MAX_EXPAND) -> list[int]:
 
 
 # ---------------------------------------------------------------- whole document
-def build_records(pages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+def build_records(pages: list[dict[str, Any]], vocab: set[str] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     """Records from ``read_page`` results of the table pages, in page order."""
     warnings: list[str] = []
     records: list[dict[str, Any]] = []
@@ -284,12 +372,13 @@ def build_records(pages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], li
         prev = pg["page"]
     if carry is not None:  # the table ends with an open row and nothing follows
         _emit(records, carry["cell"], carry["page"], carry["page"], warnings)
-    return _finish(records), warnings
+    return _finish(records, vocab), warnings
 
 
 def _merge(a: dict, b: dict) -> dict:
     meas = None if a["meas"] is None or b["meas"] is None else a["meas"] + b["meas"]
-    return {"code": a["code"] + b["code"], "name": a["name"] + b["name"], "meas": meas,
+    extra = {k: (a["extra"].get(k) or []) + (b["extra"].get(k) or []) for k in {**a["extra"], **b["extra"]}}
+    return {"code": a["code"] + b["code"], "name": a["name"] + b["name"], "extra": extra, "meas": meas,
             "shared": a["shared"] or b["shared"]}
 
 
@@ -299,31 +388,34 @@ def _emit(records, c, page, page_end, warnings):
         if c["name"] or c["meas"]:
             warnings.append(f"fault table on p.{page_end}: a row without a code was left out")
         return
-    name, name_raw = _join(_lines(c["name"]))
-    records.append({"code": code, "name": name, "measures": None, "page": page, "page_end": page_end,
-                    "_meas": c["meas"], "_extra": [], "_name_raw": name_raw, "_shared": c["shared"],
-                    "_code_raw": code_raw})
+    records.append({"code": code, "name": "", "measures": None, "page": page, "page_end": page_end,
+                    "_cell": c, "_extra": [], "_code_raw": code_raw})
 
 
-def _finish(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _finish(records: list[dict[str, Any]], vocab: set[str] | None = None) -> list[dict[str, Any]]:
     out = []
     for r in records:
-        mw = r.pop("_meas")
+        c = r.pop("_cell")
         extra = r.pop("_extra")
-        name_raw = r.pop("_name_raw")
-        shared = r.pop("_shared")
         code_raw = r.pop("_code_raw")
+        r["name"], name_raw = _join(_lines(c["name"]), vocab)
         raw_m = ""
-        if mw is not None:
-            text, raw_m = _join(_lines(mw + [w for e in extra for w in e]))
+        if c["meas"] is not None:
+            text, raw_m = _join(_lines(c["meas"] + [w for e in extra for w in e]), vocab)
             r["measures"] = _steps(text)
+        m = re.match(r"^(.*?)(\*+)$", r["code"])         # "0801*": a footnote sign, not part of the code
+        if m and m.group(1).strip():
+            r["code"], r["code_marker"] = m.group(1).strip(), m.group(2)
         rng = _ranges(r["code"])
         if rng:
             r["code_ranges"] = rng
-        if shared and mw is not None:
+        if c["shared"] and c["meas"] is not None:
             r["shared_measures"] = True
+        cols = {k: _join(_lines(w), vocab)[0] for k, w in c["extra"].items()}
+        if any(cols.values()):
+            r["columns"] = cols
         r["raw"] = {"name": name_raw, "measures": raw_m}
-        if code_raw != r["code"]:
+        if code_raw != r["code"] and code_raw != r["code"] + r.get("code_marker", ""):
             r["raw"]["code"] = code_raw
         out.append(r)
     return out

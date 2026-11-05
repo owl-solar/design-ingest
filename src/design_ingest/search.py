@@ -36,7 +36,11 @@ _WORD = re.compile(r"\d+(?:[.,]\d+)*|[^\W_]+(?:[-.][^\W_]+)*", re.UNICODE)
 SYNONYMS: dict[str, list[str]] = {
     "mppt": ["mpp"], "mpp": ["mppt"], "rating": ["class"], "ip": ["protection"],
     "yield": ["energy"], "energy": ["yield"], "baud": ["bitrate"],
+    "alarm": ["fault", "error"], "fault": ["alarm", "error"], "error": ["fault", "alarm"], "event": ["fault"],
 }
+
+
+_RECORD_BOOST = 1.6
 
 
 def _stem(w: str) -> str:
@@ -122,13 +126,30 @@ def passages(doc: Document, max_chars: int = 1200) -> list[dict[str, Any]]:
             bits.append(f"access {r['access']}")
         add(", ".join(bits), "register", r.get("page"), r.get("sheet"))
     for f in doc.data.get("fault_codes", []):
-        text = f"Fault code {f['code']}: {f['name']}."
+        head = f"Fault code {f['code']}: {f['name']}."
+        lines = []
+        if f.get("severity"):
+            lines.append(f"Severity: {f['severity']}")
+        if f.get("columns"):
+            lines.append("; ".join(f"{k}: {v}" for k, v in f["columns"].items() if v))
+        for c in f.get("causes") or []:
+            if c.get("cause"):
+                lines.append(f"Cause {c['id']}: {c['cause']}")
         if f.get("measures"):
-            text += " Corrective measures: " + " ".join(f["measures"])
-        extra = {}
+            lines.append("Corrective measures: " + " ".join(f["measures"]) if not f.get("causes") else
+                         "Corrective measures:")
+            if f.get("causes"):
+                lines.extend(f"Cause {c['id']}: {c['suggestion']}" for c in f["causes"] if c.get("suggestion"))
+                if not any(c.get("suggestion") for c in f["causes"]):
+                    lines.append(" ".join(f["measures"]))
+        extra = {"_codes": frozenset(tokenize(f["code"]))}
         if f.get("code_ranges"):
-            extra["_tokens"] = [str(n) for n in expand_codes(f["code_ranges"])]
-        add(text, "fault_code", f.get("page"), **extra)
+            nums = [str(n) for n in expand_codes(f["code_ranges"])]
+            extra["_tokens"] = nums
+            extra["_codes"] = extra["_codes"] | frozenset(nums)
+        # a long record is cut by lines; every piece starts with the code and name
+        for piece in _split_text("\n".join(lines), max_chars - len(head) - 1) or [""]:
+            add((head + " " + piece).strip(), "fault_code", f.get("page"), **extra)
     for model, entries in (doc.data.get("specs") or {}).items():
         for key, e in entries.items():
             add(f"{model}: {key}: {e['raw']}", "spec")
@@ -165,6 +186,7 @@ class Index:
         types = set(doc_types) if doc_types else None
         only = {f.lower() for f in files} if files else None
         phrase = " ".join(tokenize(query))
+        numbers = {t for t in q if _NUMBER.fullmatch(t)}
         scored = []
         for i, it in enumerate(self.items):
             if types and it.get("doc_type") not in types:
@@ -179,11 +201,15 @@ class Index:
                     s += w * self.idf.get(t, 0) * f * (self.k1 + 1) / (f + self.k1 * (1 - self.b + self.b * ln / self.avg))
             if s <= 0:
                 continue
+            if it.get("kind") == "fault_code":
+                # a record of its own is the answer, not the short table row or running head;
+                # more so when the question names its code
+                s *= _RECORD_BOOST * (2.0 if it["_codes"] & numbers else 1.0)
             if len(q) > 1 and phrase in " ".join(tokenize(it["text"])):
                 s *= 1.3  # the whole phrase appears
             scored.append((s, i))
         scored.sort(key=lambda x: -x[0])
-        return [{**{k: v for k, v in self.items[i].items() if k != "_tokens"}, "score": round(s, 3)}
+        return [{**{k: v for k, v in self.items[i].items() if k not in ("_tokens", "_codes")}, "score": round(s, 3)}
                 for s, i in scored[:top_k]]
 
 

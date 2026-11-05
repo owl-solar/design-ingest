@@ -7,6 +7,8 @@ Adds to ``doc.data`` (never changes what a parser returned, never raises):
 * ``specs``       {model: {key: {"raw", "quantities"}}} of a datasheet's key/value
                   tables, and the fixed-name fields in ``summary`` when the parser
                   gave no summary (see ``specs.canonical_specs``)
+* ``fault_codes``  alarm references written as one section with tables per alarm (Huawei style, see
+                  ``faults_tables``); fault tables read from page coordinates come from the PDF parser
 * ``doc_info``    {"doc_type", "confidence", "signals", "filename": {...}}
                   (see ``doctype.classify``)
 
@@ -16,7 +18,7 @@ from __future__ import annotations
 
 from .schema import Document
 
-ENRICH_VERSION = "2"
+ENRICH_VERSION = "3"
 
 # documents with at most this many pages are treated as datasheets for ``specs``
 _DATASHEET_MAX_PAGES = 8
@@ -39,6 +41,15 @@ def _enrich(doc: Document) -> None:
         regs = extract_registers(doc.tables)
         if regs:
             doc.data["registers"] = regs
+
+    if doc.file_type == "pdf" and not doc.data.get("fault_codes"):
+        from .faults_tables import extract_alarm_sections, has_alarm_tables
+
+        if has_alarm_tables(doc.tables):
+            recs, warns = extract_alarm_sections(doc.chunks, doc.tables)
+            if recs:
+                doc.data["fault_codes"] = recs
+            doc.warnings.extend(warns)
 
     info = classify(doc)
     doc.data["doc_info"] = info

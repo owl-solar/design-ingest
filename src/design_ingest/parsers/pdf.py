@@ -418,7 +418,7 @@ def _pvsyst_summary(pages: list[str], tables: list[Table]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-@register([".pdf"], name="pdf", version="7")
+@register([".pdf"], name="pdf", version="8")
 def parse(
     path: Path,
     tables: bool = True,
@@ -518,7 +518,7 @@ def parse(
     if max_pages is not None and n_pages > max_pages:
         warnings.append(f"read only first {max_pages} of {n_pages} pages")
 
-    fault_codes, fault_warnings = _fault_codes(fault_pages)
+    fault_codes, fault_warnings = _fault_codes(fault_pages, page_texts)
     warnings.extend(fault_warnings)
 
     data = {
@@ -547,13 +547,13 @@ def parse(
     }
 
 
-_FAULT_HINT = ("code", "measure", "action", "remed", "solution", "troubleshoot")
+_FAULT_HINT = ("measure", "action", "remed", "solution", "troubleshoot")
 
 
 def _may_have_fault_table(chars: list[dict]) -> bool:
     """Cheap test before words and rules of a page are read: the heading words occur."""
     low = "".join(c.get("text", "") for c in chars).lower()
-    return "code" in low and any(h in low for h in _FAULT_HINT[1:])
+    return any(k in low for k in ("code", "error", "fault", "alarm")) and any(h in low for h in _FAULT_HINT)
 
 
 def _fault_page(page_no: int, page, horiz) -> dict | None:
@@ -561,15 +561,15 @@ def _fault_page(page_no: int, page, horiz) -> dict | None:
 
     try:
         words = horiz.extract_words()
-        header = faults.find_header(words)
-        if header is None:
+        headers = faults.find_headers(words)
+        if not headers:
             return None
-        return {"page": page_no, "words": words, "edges": page.edges, "height": float(page.height), "header": header}
+        return {"page": page_no, "words": words, "edges": page.edges, "height": float(page.height), "header": headers}
     except Exception:
         return None
 
 
-def _fault_codes(pages: list[dict]) -> tuple[list[dict], list[str]]:
+def _fault_codes(pages: list[dict], page_texts: list[str]) -> tuple[list[dict], list[str]]:
     from .. import faults
 
     if not pages:
@@ -581,7 +581,11 @@ def _fault_codes(pages: list[dict]) -> tuple[list[dict], list[str]]:
             read.append(faults.read_page(fp["page"], fp["words"], fp["edges"], fp["height"], fp["header"], goes_on))
         except Exception as e:  # a table that cannot be read must not break the page text
             return [], [f"fault table on p.{fp['page']} could not be read: {type(e).__name__}"]
-    return faults.build_records(read)
+    # words of the document: decides whether a hyphen at a line end was only hyphenation
+    vocab = set(re.findall(r"[a-z]{3,}", " ".join(page_texts).lower()))
+    for fp in pages:
+        vocab.update(w["text"].lower() for w in fp["words"] if w["text"].isalpha() and len(w["text"]) > 2)
+    return faults.build_records(read, vocab)
 
 
 def _image_cover(page) -> float:
