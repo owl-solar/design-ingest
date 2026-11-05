@@ -6,7 +6,7 @@ research code). Everything below is stable within a `schema_version` (see the en
 ## Install, pinned
 
 ```bash
-pip install "design-ingest[llm] @ git+https://github.com/owl-solar/design-ingest@v0.3.0"
+pip install "design-ingest[llm] @ git+https://github.com/owl-solar/design-ingest@v0.4.0"
 # DWG files also need the free ODA File Converter (see README); without it save drawings as DXF.
 ```
 
@@ -37,6 +37,8 @@ ans  = ask("Which register holds the daily yield?", docs, allow_external=True)  
 | `doc.data["summary"]` | format-specific key results (PAN/OND parameters, drawing title block and totals, PVsyst report results, datasheet fields) |
 | `doc.data["specs"]` | datasheet key/value rows as typed quantities (`value`, `unit`, `temperature_c`, ...) |
 | `doc.data["registers"]` | register / point lists: `name`, `address`, `n_registers`, `data_type`, `scale`, `unit`, `range`, `access`, `page` |
+
+| `doc.data["fault_codes"]` | PDF manuals: one record per fault / alarm code, `{code, name, measures (list of steps), page, page_end}`; `code` is the text of the cell (`"39"`, `"264-283"`, `"59, 70-74"`), `code_ranges` the numbers in it, `shared_measures` when one measures cell serves several codes; found by `search` as one passage per code |
 
 Units are in the key names (`dc_voltage_max_v`, `energy_p50_mwh_year`). Values that are not in the
 document are absent, never guessed.

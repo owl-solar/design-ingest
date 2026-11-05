@@ -23,6 +23,7 @@ On top of every file the package adds, without an LLM:
 | `doc_info` | document type (datasheet, manual, drawing, protocol, certificate, PVsyst report, BOM ...), confidence, and file-name metadata (date, version, revision, language, drawing number) |
 | `specs`, `summary` | datasheet key/value tables as typed quantities (`{"value": 352, "unit": "kVA", "temperature_c": 30}`) and fixed-name fields (`dc_voltage_max_v`, `mppt_voltage_range_v`, `ac_power`, `efficiency_max_pct`, `ip_rating`, ...) |
 | `registers` | register / point lists (Modbus, SCADA, EMS) with address, type, scale, unit |
+| `fault_codes` | fault / alarm code tables of PDF manuals: code, name, corrective measures (steps), page |
 
 `design_ingest.quantities.parse_quantities("500 V – 1500 V")` is usable on its own.
 
@@ -36,7 +37,7 @@ datasheets; tender requirements) with Claude, validated with pydantic.
 pip install -e path/to/design-ingest
 
 # in another project: pinned version from GitHub
-pip install "design-ingest @ git+https://github.com/owl-solar/design-ingest@v0.3.0"
+pip install "design-ingest @ git+https://github.com/owl-solar/design-ingest@v0.4.0"
 
 # extras
 pip install -e "path/to/design-ingest[llm]"     # LLM extraction (anthropic)

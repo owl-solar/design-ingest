@@ -9,8 +9,10 @@ Every document is cut into passages of at most ``max_chars``:
 
 * text chunks (by line), tables (by rows, the header repeated in every piece);
 * one short passage per register of a register map (``Register 5003 (U16): Daily power
-  yields, scale 0.1, unit kWh``) and per datasheet specification (``Max. PV input
-  voltage: 1500 V``), so a question about a single value finds that value, not a page.
+  yields, scale 0.1, unit kWh``), per datasheet specification (``Max. PV input
+  voltage: 1500 V``) and per fault code (``Fault code 39: Low System Insulation Resistance.
+  Corrective measures: ...``), so a question about a single value or code finds that
+  record, not a page. A code range (``264-283``) is found by any number inside it.
 
 Ranking is BM25 over words and numbers (``5003``, ``0.1``, ``kva`` ...), the file name
 counts as text of its passages, and a passage that contains the whole query phrase gets a
@@ -24,6 +26,7 @@ import re
 from collections import Counter
 from typing import Any, Iterable
 
+from .faults import expand as expand_codes
 from .schema import Document
 
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
@@ -96,9 +99,9 @@ def passages(doc: Document, max_chars: int = 1200) -> list[dict[str, Any]]:
     base = {"file": doc.filename, "doc_type": (doc.data.get("doc_info") or {}).get("doc_type"), "source": doc.source}
     out: list[dict[str, Any]] = []
 
-    def add(text: str, kind: str, page=None, sheet=None, layer=None, section=None):
+    def add(text: str, kind: str, page=None, sheet=None, layer=None, section=None, **extra):
         out.append({**base, "text": text, "kind": kind, "page": page, "sheet": sheet, "layer": layer,
-                    "section": section})
+                    "section": section, **extra})
 
     for c in doc.chunks:
         if not c.text.strip():
@@ -118,6 +121,14 @@ def passages(doc: Document, max_chars: int = 1200) -> list[dict[str, Any]]:
         if r.get("access"):
             bits.append(f"access {r['access']}")
         add(", ".join(bits), "register", r.get("page"), r.get("sheet"))
+    for f in doc.data.get("fault_codes", []):
+        text = f"Fault code {f['code']}: {f['name']}."
+        if f.get("measures"):
+            text += " Corrective measures: " + " ".join(f["measures"])
+        extra = {}
+        if f.get("code_ranges"):
+            extra["_tokens"] = [str(n) for n in expand_codes(f["code_ranges"])]
+        add(text, "fault_code", f.get("page"), **extra)
     for model, entries in (doc.data.get("specs") or {}).items():
         for key, e in entries.items():
             add(f"{model}: {key}: {e['raw']}", "spec")
@@ -133,7 +144,7 @@ class Index:
         self.len: list[int] = []
         df: Counter = Counter()
         for it in items:
-            toks = tokenize(it["file"]) + tokenize(it["text"])
+            toks = tokenize(it["file"]) + tokenize(it["text"]) + it.get("_tokens", [])
             c = Counter(toks)
             self.tf.append(c)
             self.len.append(len(toks))
@@ -172,7 +183,8 @@ class Index:
                 s *= 1.3  # the whole phrase appears
             scored.append((s, i))
         scored.sort(key=lambda x: -x[0])
-        return [{**self.items[i], "score": round(s, 3)} for s, i in scored[:top_k]]
+        return [{**{k: v for k, v in self.items[i].items() if k != "_tokens"}, "score": round(s, 3)}
+                for s, i in scored[:top_k]]
 
 
 def build_index(docs: Iterable[Document], max_chars: int = 1200) -> Index:

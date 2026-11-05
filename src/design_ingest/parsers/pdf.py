@@ -28,6 +28,11 @@ data:
                    inverter models, p50/p90/p95 energy, specific production, PR,
                    loss_diagram [{name, pct}], monthly_e_grid_mwh
 
+  fault_codes      fault / alarm code table of a manual ("Fault Code | Fault Name |
+                   Corrective Measures"), one record per code: code, name, measures
+                   (list of steps), page, page_end (see design_ingest.faults for the
+                   rules; absent when the document has no such table)
+
   low_text_pages   pages with a big image (>= 50 % of the page) and under 400
                    characters of text: scans with a thin OCR layer, full-page
                    covers. A warning points to extract(vision=True). Pages with no
@@ -413,7 +418,7 @@ def _pvsyst_summary(pages: list[str], tables: list[Table]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-@register([".pdf"], name="pdf", version="6")
+@register([".pdf"], name="pdf", version="7")
 def parse(
     path: Path,
     tables: bool = True,
@@ -442,6 +447,7 @@ def parse(
     drawing_text: list[str] = []
     title_texts: list[str] = []
     page_texts: list[str] = []
+    fault_pages: list[dict] = []  # pages with a fault-table header: words and rules, read after the loop
     with pdf:
         meta = {k.lower(): v for k, v in (pdf.metadata or {}).items() if isinstance(v, (str, int, float))}
         pages = pdf.pages if max_pages is None else pdf.pages[:max_pages]
@@ -473,6 +479,10 @@ def parse(
                     if tt:
                         title_texts.append(tt)
             page_texts.append(text)
+            if not is_drawing and _may_have_fault_table(all_chars):
+                fp = _fault_page(i, page, horiz)
+                if fp:
+                    fault_pages.append(fp)
             if text:
                 chunks.append(Chunk(text=text, kind="text", page=i))
                 if is_drawing:
@@ -508,6 +518,9 @@ def parse(
     if max_pages is not None and n_pages > max_pages:
         warnings.append(f"read only first {max_pages} of {n_pages} pages")
 
+    fault_codes, fault_warnings = _fault_codes(fault_pages)
+    warnings.extend(fault_warnings)
+
     data = {
         "pages": n_pages,
         "empty_pages": empty,
@@ -516,6 +529,8 @@ def parse(
         "drawing_pages": drawing,
         "rotated_chars": rotated,
     }
+    if fault_codes:
+        data["fault_codes"] = fault_codes
     if drawing_text:
         summ = _drawing_summary("\n".join(drawing_text), "\n".join(title_texts), (profile or {}).get("pdf"))
         if summ:
@@ -530,6 +545,43 @@ def parse(
         "data": data,
         "warnings": warnings,
     }
+
+
+_FAULT_HINT = ("code", "measure", "action", "remed", "solution", "troubleshoot")
+
+
+def _may_have_fault_table(chars: list[dict]) -> bool:
+    """Cheap test before words and rules of a page are read: the heading words occur."""
+    low = "".join(c.get("text", "") for c in chars).lower()
+    return "code" in low and any(h in low for h in _FAULT_HINT[1:])
+
+
+def _fault_page(page_no: int, page, horiz) -> dict | None:
+    from .. import faults
+
+    try:
+        words = horiz.extract_words()
+        header = faults.find_header(words)
+        if header is None:
+            return None
+        return {"page": page_no, "words": words, "edges": page.edges, "height": float(page.height), "header": header}
+    except Exception:
+        return None
+
+
+def _fault_codes(pages: list[dict]) -> tuple[list[dict], list[str]]:
+    from .. import faults
+
+    if not pages:
+        return [], []
+    read = []
+    for k, fp in enumerate(pages):
+        goes_on = k + 1 < len(pages) and pages[k + 1]["page"] == fp["page"] + 1
+        try:
+            read.append(faults.read_page(fp["page"], fp["words"], fp["edges"], fp["height"], fp["header"], goes_on))
+        except Exception as e:  # a table that cannot be read must not break the page text
+            return [], [f"fault table on p.{fp['page']} could not be read: {type(e).__name__}"]
+    return faults.build_records(read)
 
 
 def _image_cover(page) -> float:
