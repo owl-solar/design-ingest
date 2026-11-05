@@ -30,6 +30,7 @@ def test_ond(samples):
     assert s["pnom_ac_kw"] == 300.0 and s["vmpp_min_v"] == 500 and s["vmpp_max_v"] == 1500
     assert s["n_mppt"] == 6 and s["efficiency_euro_pct"] == 98.5
     assert s["dc_ac_ratio_nominal"] == pytest.approx(1.02)
+    assert s["threshold_w"] == 1500.0 and s["threshold_kw"] == 1.5  # PSeuil is in W
     assert s["efficiency_profile_pin_pout_kw"][-1] == [306.0, 300.0]
 
 
@@ -144,8 +145,10 @@ def test_pdf_drawing_sheet(samples):
     assert tb["Project"] == "Testfield" and tb["Location"] == "Main street 1, Town, Country"
     assert tb["Drawn"] == "AB" and tb["Checked"] == "CD" and tb["Scale"] == "1:2000@A1"
     assert tb["Drawing No"] == "T-101" and tb["Rev"] == "0"
-    assert d.data["rotated_chars_skipped"] == len("ROTATEDNOTE")
-    assert "ROTATEDNOTE" not in d.chunks[0].text
+    assert d.data["rotated_chars"] == len("ROTATEDNOTE")
+    assert "ROTATEDNOTE" not in d.chunks[0].text  # not mixed into the horizontal lines
+    rot = [c for c in d.chunks if c.meta.get("rotated")]
+    assert len(rot) == 1 and rot[0].text == "ROTATEDNOTE"  # kept, in reading order
 
 
 def test_cache_and_roundtrip(samples, tmp_path):
@@ -211,15 +214,188 @@ def test_cad_summary_groups_and_module_estimate():
         "3P24W_area_A": {"inserts_model_total": 99},  # area block, not a table
     }
     lengths = {
-        "DETRA MV Cable": {"m": 100.0}, "DETRA MV trench 1.0m wide": {"m": 40.0},
-        "DETRA Fence": {"m": 500.0}, "Hedge (green fence)": {"m": 70.0},
-        "PVcase String Cables": {"m": 900.0}, "DETRA LV AC cable": {"m": 60.0},
+        "PLANT MV Cable": {"m": 100.0}, "PLANT MV trench 1.0m wide": {"m": 40.0},
+        "PLANT Fence": {"m": 500.0}, "Hedge (green fence)": {"m": 70.0},
+        "PVcase String Cables": {"m": 900.0}, "PLANT LV AC cable": {"m": 60.0},
         "Unknown units": {"m": None},
     }
-    s = _build_summary("m", 7, 3, [], blocks, lengths, {"DETRA Fence": {"m2": 25_000.0}})
+    s = _build_summary("m", 7, 3, [], blocks, lengths, {"PLANT Fence": {"m2": 25_000.0}})
     assert s["modules_estimate"]["total"] == 72 * 10 + 24 * 2
     assert list(s["modules_estimate"]["by_block"]) == ["3P24@11DEG F FX ID2 PVBlock", "3P8@11DEG F FX ID3 PVBlock"]
     g = s["length_m_by_group"]
     assert g["mv_cables"] == 100 and g["trenches"] == 40 and g["fence"] == 500 and g["hedges"] == 70
     assert g["string_cables_dc"] == 900 and g["lv_ac_cables"] == 60
     assert s["fenced_area_ha"] == 2.5
+
+
+def test_pdf_multiline_cells_become_rows():
+    from design_ingest.parsers.pdf import _table_from_rows
+
+    t = _table_from_rows(
+        [["", "E_Grid\nMWh", "PR\nratio"], ["January\nFebruary", "10\n20", "0.7\n0.8"], ["Year", "30", "0.75"]], 1
+    )
+    assert t.columns == ["", "E_Grid MWh", "PR ratio"]  # wrapped header text is joined
+    assert t.rows == [["January", "10", "0.7"], ["February", "20", "0.8"], ["Year", "30", "0.75"]]
+
+
+def test_pdf_pvsyst_report_summary():
+    from design_ingest.parsers.pdf import _pvsyst_summary
+    from design_ingest.schema import Table
+
+    p1 = "PVsyst V8.0.5\nPVsyst - Simulation report\nProject: P1\nVariant: 500N\nSystem power: 42.89 MWp"
+    p2 = (
+        "Simulation date:\n14/05/25 14:32\nLatitude 52.30\u00b0N Albedo 0.20\nLongitude -8.69\u00b0W\nAltitude 75m\n"
+        "Tilt/Azimuth 20 / 0\u00b0 Tilt/Azimuth 20 / 0\u00b0\nNb. of modules 69174units Nb. of units 176units\n"
+        "Pnom total 42.89MWp Pnom total 37.84MWac\nPnom ratio 1.133\n"
+        "Produced Energy 42444MWh/year Specific production 990kWh/kWp/year Perf. Ratio PR 89.49%\n"
+        "PV module Inverter\nManufacturer A Manufacturer B\nModel M1 Model I1\n"
+        "Unit Nom. Power 620Wp Unit Nom. Power 215kWac\n"
+        "Produced Energy (P90) 39251MWh/year"
+    )
+    p3 = "Loss diagram\n971 kWh/m\u00b2 Global horizontal irradiation\n-4.3% Near Shadings: irradiance loss\n+0.1% Ground reflection"
+    t = Table(page=2, columns=["", "E_Grid\nMWh"], rows=[["January", "1069"], ["Year", "42444"]])
+    s = _pvsyst_summary([p1, p2, p3], [t])
+    assert s["project"] == "P1" and s["software_version"] == "8.0.5" and s["system_power_mwp"] == 42.89
+    assert s["latitude"] == 52.3 and s["longitude"] == -8.69 and s["altitude_m"] == 75
+    assert s["n_modules"] == 69174 and s["n_inverters"] == 176 and s["pnom_ac_mw"] == 37.84
+    assert s["energy_p50_mwh_year"] == 42444 and s["energy_p90_mwh_year"] == 39251
+    assert s["performance_ratio_pct"] == 89.49 and s["specific_production_kwh_kwp_year"] == 990
+    assert s["module_model"] == "M1" and s["inverter_model"] == "I1" and s["module_wp"] == 620
+    assert s["tilt_azimuth_deg"] == [[20, 0]]
+    assert s["loss_diagram"] == [{"name": "Near Shadings: irradiance loss", "pct": -4.3},
+                                 {"name": "Ground reflection", "pct": 0.1}]
+    assert s["monthly_e_grid_mwh"] == {"January": 1069.0}
+
+
+def test_csv_metadata_timeseries_stats(tmp_path):
+    p = tmp_path / "tmy.csv"
+    p.write_text(
+        "#TMY hourly data\n#Site,None\n#Latitude,52.8312\n#Longitude,-6.1191\n#Time Zone,0\n"
+        "Year,Month,Day,Hour,Minute,GHI\n1990,1,1,0,0,0.0\n1990,1,1,1,0,100.0\n1990,1,1,2,0,300.0\n1990,1,1,3,0,0.0\n1990,1,1,4,0,0.0\n",
+        encoding="utf-8",
+    )
+    d = ingest(p, use_cache=False)
+    m = d.data["metadata"]
+    assert m["title"] == "TMY hourly data" and m["Latitude"] == 52.8312 and m["Longitude"] == -6.1191
+    assert "Site" not in m  # "None" is no value
+    ts = d.data["timeseries"]
+    assert ts["start"] == "1990-01-01T00:00:00" and ts["end"] == "1990-01-01T04:00:00"
+    assert ts["step_minutes"] == 60 and ts["irregular_steps"] == 0 and ts["rows"] == 5
+    assert d.data["column_stats"]["GHI"] == {"min": 0.0, "max": 300.0, "mean": 80.0, "sum": 400.0}
+
+
+def test_csv_pvsyst_date_column(tmp_path):
+    p = tmp_path / "hourly.csv"
+    p.write_text("date;GlobHor\n01/01/90 00:00;0\n01/01/90 01:00;5\n01/01/90 02:00;9\n", encoding="utf-8")
+    ts = ingest(p, use_cache=False).data["timeseries"]
+    assert ts["start"] == "1990-01-01T00:00:00" and ts["step_minutes"] == 60
+
+
+def test_xlsx_header_row_below_title_and_merged_cells(tmp_path):
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["STRING DISTRIBUTION", None, None, None, None])
+    ws.append([])
+    ws.append([None, None, "No. of Modules", "DC, kWp", "AC, kW"])  # first two columns unnamed
+    ws.append(["TS-1", "INV1", 638, 395.56, 300])
+    ws.append([None, "INV2", 686, 425.32, 300])
+    ws.append([None, "INV3", 676, 419.12, 300])
+    ws.merge_cells("A4:A6")
+    ws.merge_cells("A1:E1")  # a title spanning columns must not be copied sideways
+    wb.save(tmp_path / "s.xlsx")
+    d = ingest(tmp_path / "s.xlsx", use_cache=False)
+    t = d.tables[0]
+    assert t.columns == ["col1", "col2", "No. of Modules", "DC, kWp", "AC, kW"]
+    assert [r[0] for r in t.rows] == ["TS-1", "TS-1", "TS-1"]  # merged cell repeated down its rows
+    assert t.rows[1] == ["TS-1", "INV2", 686, 425.32, 300]
+    assert d.data["sheets"][0]["rows_above_header"] == ["STRING DISTRIBUTION"]
+
+
+def test_ond_efficiency_per_voltage_and_profile_padding():
+    from design_ingest.parsers.pvsyst import _inverter_summary, parse_pvsyst_text
+
+    text = """PVObject_=pvGInverter
+  PVObject_Converter=TConverter
+    PNomConv=320.0
+    PSeuil=1600.0
+    VNomEff=860.0,1300.0
+    EfficMaxV=98.5,98.9
+    EfficEuroV=98.2,98.7
+    PVObject_ProfilPIO=TCubicProfile
+      NPtsMax=4
+      NPtsEff=2
+      Point_1=60.0,0.0
+      Point_2=90.0,41.0
+      Point_3=0.0,0.0
+      Point_4=0.0,0.0
+    End of TCubicProfile
+    PVObject_ProfilPIOV1=TCubicProfile
+      NPtsEff=2
+      Point_1=1600.0,0.0
+      Point_2=16680.6,16000.0
+      Point_3=0.0,0.0
+    End of TCubicProfile
+  End of PVObject pvConverter
+End of PVObject pvGInverter
+"""
+    obj = parse_pvsyst_text(text)["PVObject"]
+    s = _inverter_summary(obj)
+    assert s["efficiency_profile_pin_pout_kw"] == [[60.0, 0.0], [90.0, 41.0]]  # padding dropped
+    assert s["vdc_eff_v"] == [860.0, 1300.0]
+    assert s["efficiency_max_by_vdc_pct"] == [98.5, 98.9] and s["efficiency_euro_by_vdc_pct"] == [98.2, 98.7]
+    assert s["efficiency_profile_by_vdc_pin_pout_w"]["860.0"] == [[1600.0, 0.0], [16680.6, 16000.0]]
+    assert s["threshold_w"] == 1600.0 and s["threshold_kw"] == 1.6
+
+
+def test_pdf_multiline_cells_with_empty_cell_in_row():
+    from design_ingest.parsers.pdf import _table_from_rows
+
+    # as on a PVsyst horizon table: stacked cells next to an empty one (used to raise IndexError)
+    t = _table_from_rows([["A", "B", "C"], ["1\n2", "3\n4", ""], ["5", "6", "7"]], 1)
+    assert t.rows == [["1", "3", ""], ["2", "4", ""], ["5", "6", "7"]]
+
+
+def test_pdf_wrapped_cells_and_continued_table_header():
+    from design_ingest.parsers.pdf import _inherit_header, _table_from_rows
+
+    first = _table_from_rows(
+        [["No.", "Name", "Address"], ["1.", "Protocol\nnum", "4950 -\n4951"], ["2.", "Daily yields", "5003"]], 7
+    )
+    assert first.columns == ["No.", "Name", "Address"]
+    assert first.rows[0] == ["1.", "Protocol num", "4950 - 4951"]
+    # next page: header not repeated, and the first data row (all text) is mistaken for a header
+    cont = _table_from_rows([["3.", "Output type", "5002"], ["4.", "Total yields", "5004 -\n5005"]], 8)
+    got = _inherit_header(cont, first, first_on_page=True)
+    assert got.columns == ["No.", "Name", "Address"]
+    assert got.rows == [["3.", "Output type", "5002"], ["4.", "Total yields", "5004 - 5005"]]
+    # header missing altogether (an empty cell in the first row): inherited as it is
+    nohead = _table_from_rows([["3.", "Output type", ""], ["4.", "Total yields", "5004"]], 8)
+    assert nohead.columns == []
+    assert _inherit_header(nohead, first, True).columns == ["No.", "Name", "Address"]
+    # not inherited: second table on the page, a page gap, another width, or a new table with its own header
+    assert _inherit_header(cont, first, first_on_page=False).columns == cont.columns
+    assert _inherit_header(cont.model_copy(update={"page": 10}), first, True).columns == cont.columns
+    narrow = _table_from_rows([["3.", "x"], ["4.", "y"]], 8)
+    assert _inherit_header(narrow, first, True).columns == narrow.columns
+    other = _table_from_rows([["Item", "Qty", "Unit"], ["a", "1", "pcs"]], 8)
+    assert _inherit_header(other, first, True).columns == ["Item", "Qty", "Unit"]
+
+
+def test_pdf_scanned_page_is_flagged(tmp_path):
+    pytest.importorskip("reportlab")
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+    from PIL import Image
+
+    img = Image.new("RGB", (200, 280), "white")
+    cv = canvas.Canvas(str(tmp_path / "scan.pdf"), pagesize=(595, 842))
+    cv.drawImage(ImageReader(img), 0, 0, 595, 842)  # full-page image
+    cv.drawString(50, 50, "page 1 of 1")  # thin text layer
+    cv.showPage()
+    cv.drawString(100, 700, "A normal short page without any picture")
+    cv.save()
+    d = ingest(tmp_path / "scan.pdf", use_cache=False)
+    assert d.data["low_text_pages"] == [1]
+    assert any("almost no text" in w for w in d.warnings)

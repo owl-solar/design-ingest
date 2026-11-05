@@ -92,11 +92,13 @@ def _get(d: dict, *keys, default=None):
     return default
 
 
-def _profile_points(block: dict | None) -> list[list[float]]:
+def _profile_points(block: dict | None, n_eff: int | None = None) -> list[list[float]]:
+    """Points of a profile in order; ``n_eff`` (NPtsEff) drops the unused [0, 0] padding."""
     if not isinstance(block, dict):
         return []
     pts = [(int(k.split("_")[1]), v) for k, v in block.items() if k.startswith("Point_") and isinstance(v, list)]
-    return [v for _, v in sorted(pts)]
+    out = [v for _, v in sorted(pts)]
+    return out[:n_eff] if isinstance(n_eff, int) and n_eff > 0 else out
 
 
 def _module_summary(obj: dict) -> dict:
@@ -185,7 +187,7 @@ def _inverter_summary(obj: dict) -> dict:
         "efficiency_max_pct": _get(conv, "EfficMax"),
         "efficiency_euro_pct": _get(conv, "EfficEuro"),
         "phases": _get(conv, "MonoTri"),
-        "threshold_kw": _get(conv, "PSeuil"),
+        "threshold_w": _get(conv, "PSeuil"),  # PVsyst stores the threshold power in W
         "n_inputs": _get(obj, "NbInputs"),
         "n_mppt": _get(obj, "NbMPPT"),
         "transformer": _get(obj, "Transfo"),
@@ -194,11 +196,31 @@ def _inverter_summary(obj: dict) -> dict:
         "depth_m": _get(com, "Depth"),
         "weight_kg": _get(com, "Weight"),
     }
+    if s["threshold_w"] is not None:
+        s["threshold_kw"] = round(s["threshold_w"] / 1000, 4)  # key kept from v0.1.0, value was W before
     if s["pnom_ac_kw"] and s["pnom_dc_kw"]:
         s["dc_ac_ratio_nominal"] = round(s["pnom_dc_kw"] / s["pnom_ac_kw"], 3)
     eff = conv.get("ProfilPIO")
     if isinstance(eff, dict):
-        s["efficiency_profile_pin_pout_kw"] = _profile_points(eff)
+        s["efficiency_profile_pin_pout_kw"] = _profile_points(eff, eff.get("NPtsEff"))
+    # efficiency per DC voltage: the file lists the voltages (VNomEff, usually Vmin/Vnom/Vmax),
+    # their max / euro efficiency and one Pin->Pout profile each (ProfilPIOV1..3)
+    volts = conv.get("VNomEff")
+    volts = volts if isinstance(volts, list) else ([volts] if isinstance(volts, (int, float)) else [])
+    if volts:
+        s["vdc_eff_v"] = volts
+        for key, src in (("efficiency_max_by_vdc_pct", "EfficMaxV"), ("efficiency_euro_by_vdc_pct", "EfficEuroV")):
+            vals = conv.get(src)
+            vals = vals if isinstance(vals, list) else ([vals] if isinstance(vals, (int, float)) else [])
+            if vals:
+                s[key] = vals
+        by_v = {}
+        for n, v in enumerate(volts, 1):
+            blk = conv.get(f"ProfilPIOV{n}")
+            if isinstance(blk, dict):
+                by_v[str(v)] = _profile_points(blk, blk.get("NPtsEff"))
+        if by_v:
+            s["efficiency_profile_by_vdc_pin_pout_w"] = by_v
     return {k: v for k, v in s.items() if v is not None}
 
 
@@ -233,6 +255,6 @@ def parse_pan(path: Path) -> dict:
     return _build(path, "pan")
 
 
-@register([".ond"], name="pvsyst_ond", version="1", file_type="ond")
+@register([".ond"], name="pvsyst_ond", version="3", file_type="ond")
 def parse_ond(path: Path) -> dict:
     return _build(path, "ond")

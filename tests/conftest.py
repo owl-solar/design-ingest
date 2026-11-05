@@ -91,7 +91,7 @@ OND_TEXT = """PVObject_=pvGInverter
     VMppMin=500
     VMPPMax=1500
     VAbsMax=1500
-    PSeuil=1.50
+    PSeuil=1500.0
     EfficMax=99.01
     EfficEuro=98.50
     MonoTri=Tri
