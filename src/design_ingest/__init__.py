@@ -14,7 +14,7 @@ from .registers import extract_registers
 from .schema import SCHEMA_VERSION, Chunk, Document, ParseError, Table
 from .specs import canonical_specs, extract_specs
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 
 def extract(*args, **kwargs):
