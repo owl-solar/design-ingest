@@ -5,7 +5,8 @@
     design-ingest dir FOLDER --out OUT_DIR [--md]
     design-ingest extract FILE --schema module|inverter|battery|tender [--vision] [--out OUT.json]
     design-ingest eval FOLDER [--expected expected.json] [--snapshot OUT.json]
-    design-ingest search PATH "query" [--top 8] [--type datasheet] [--file NAME]
+    design-ingest search PATH "query" [--top 8] [--type datasheet] [--file NAME] [--mode bm25|hybrid]
+    design-ingest download-model
     design-ingest ask PATH "question" [--top 8] --allow-external
     design-ingest llm-log
 
@@ -81,6 +82,10 @@ def main(argv: list[str] | None = None) -> int:
     sr.add_argument("--top", type=int, default=8)
     sr.add_argument("--type", action="append", dest="types", help="document type filter, repeatable")
     sr.add_argument("--file", action="append", dest="files", help="file name filter, repeatable")
+    sr.add_argument("--mode", choices=["bm25", "hybrid"], default="bm25",
+                    help="hybrid = BM25 + embeddings (extra [embeddings] and download-model needed)")
+
+    sub.add_parser("download-model", help="download the embedding model for --mode hybrid (about 130 MB, network)")
 
     q = sub.add_parser("ask", help="answer a question from the best passages, with checked citations (uses the API)")
     q.add_argument("path")
@@ -133,12 +138,20 @@ def main(argv: list[str] | None = None) -> int:
             from .ask import _load
             from .search import build_index, location
 
-            hits = build_index(_load(a.path)).search(a.query, a.top, a.types, a.files)
+            hits = build_index(_load(a.path), mode=a.mode).search(a.query, a.top, a.types, a.files)
             for i, h in enumerate(hits, 1):
-                print(f"[{i}] {h['score']}  {location(h)}  ({h['kind']})")
+                ranks = f"  bm25 #{h['bm25_rank']}, embedding #{h['embedding_rank']}" if a.mode == "hybrid" else ""
+                print(f"[{i}] {h['score']}  {location(h)}  ({h['kind']}){ranks}")
                 print("    " + h["text"][:300].replace(chr(10), " | "))
             if not hits:
                 print("no matching passage")
+        elif a.cmd == "download-model":
+            from . import embeddings
+
+            print(f"downloading {embeddings.DEFAULT_MODEL} (about {embeddings.MODEL_SIZE_MB} MB) "
+                  f"to {embeddings.model_dir()} ...")
+            embeddings.download_model()
+            print("done. Documents are not sent anywhere; this was the only network request.")
         elif a.cmd == "ask":
             from .ask import ask
 
