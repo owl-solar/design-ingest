@@ -8,6 +8,7 @@ size, names) are filled here.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 from dataclasses import dataclass
@@ -67,8 +68,10 @@ def file_sha256(path: Path) -> str:
 
 
 def _cache_key(sha: str, spec: ParserSpec, options: dict[str, Any]) -> str:
+    from .enrich import ENRICH_VERSION
+
     opts = json.dumps(options, sort_keys=True, default=str)
-    raw = f"{sha}|{spec.name}|{spec.version}|{opts}"
+    raw = f"{sha}|{spec.name}|{spec.version}|{ENRICH_VERSION}|{opts}"
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
@@ -87,6 +90,11 @@ def ingest(
     Options are passed to the parser (e.g. ``tables=False`` for a fast PDF read,
     ``max_rows=...`` for spreadsheets). Results are cached by file content, so
     re-reading an unchanged file is instant.
+
+    ``profile`` (a path or dict, or the ``DESIGN_INGEST_PROFILE`` environment
+    variable) sets the naming conventions of drawings: see ``design_ingest.profiles``.
+    After parsing, ``design_ingest.enrich`` adds ``doc.data["doc_info"]`` (document
+    type), ``registers`` and ``specs`` where they apply.
     """
     _load_parsers()
     path = Path(path).expanduser().resolve()
@@ -98,6 +106,14 @@ def ingest(
         raise ParseError(
             f"Unsupported file type '{ext}' ({path.name}). Supported: {', '.join(supported_extensions())}"
         )
+
+    # profile: only parsers that take one get it; the resolved dict (defaults + file) is part of the cache key
+    if "profile" in inspect.signature(spec.func).parameters:
+        from .profiles import load_profile
+
+        options = {**options, "profile": load_profile(options.get("profile"))}
+    else:
+        options = {k: v for k, v in options.items() if k != "profile"}
 
     sha = file_sha256(path)
     cache_file = None
@@ -130,6 +146,9 @@ def ingest(
         parser_version=spec.version,
         **result,
     )
+    from .enrich import enrich
+
+    enrich(doc)
     if cache_file is not None:
         try:
             doc.save_json(cache_file)

@@ -291,7 +291,7 @@ def _multiplicity(e: Entity) -> int:
     return max(1, e.i(70, 1)) * max(1, e.i(71, 1))
 
 
-def parse_dxf_text(text: str, max_inserts: int = 5000) -> dict:
+def parse_dxf_text(text: str, max_inserts: int = 5000, profile: dict | None = None) -> dict:
     secs = _sections(text)
     hdr = _header(secs.get("HEADER", []))
     warnings: list[str] = []
@@ -526,32 +526,20 @@ def parse_dxf_text(text: str, max_inserts: int = 5000) -> dict:
             "lengths": lengths_out,
             "closed_areas": areas_out,
             "dimensions": dimensions,
-            "summary": _build_summary(units, len(layers), n_ins, top, blocks, lengths_out, areas_out),
+            "summary": _build_summary(units, len(layers), n_ins, top, blocks, lengths_out, areas_out, profile),
         },
         "warnings": warnings,
     }
 
 
-_TABLE_BLOCK_RE = re.compile(r"^(\d+)P(\d+)\b.*PVBlock", re.I)  # "3P24@11DEG F FX ID2 PVBlock"
+def _build_summary(units, n_layers, n_ins, top, blocks, lengths_out, areas_out, profile: dict | None = None) -> dict:
+    """Summary of a drawing. Layer groups and block names come from the profile
+    (see ``design_ingest.profiles``): the defaults fit the drawings used for development."""
+    from ..profiles import DEFAULT_PROFILE, compiled_layer_groups
 
-# first matching rule wins; layer names are matched case-insensitively
-_LAYER_GROUPS: list[tuple[str, re.Pattern]] = [
-    (g, re.compile(p, re.I)) for g, p in [
-        ("trenches", r"trench"),
-        ("contours", r"contour"),  # before earthing: "Plex-Earth Contours" is terrain
-        ("earthing", r"earth|ground"),
-        ("hedges", r"hedge"),
-        ("fence", r"fence"),
-        ("roads", r"road"),
-        ("communication", r"communication|fib(er|re)|cctv|sensor"),
-        ("string_cables_dc", r"string cable|\bdc\b.*cable|dc (neg|pos)"),
-        ("mv_cables", r"\bmv\b.*cable|grid connection cable|substa"),
-        ("lv_ac_cables", r"\blv\b.*cable|\bac\b.*cable|inverter.*transformer"),
-    ]
-]
-
-
-def _build_summary(units, n_layers, n_ins, top, blocks, lengths_out, areas_out) -> dict:
+    cad_rules = (profile or DEFAULT_PROFILE)["cad"]
+    table_block_re = re.compile(cad_rules["table_block_regex"], re.I)  # "3P24@11DEG F FX ID2 PVBlock"
+    layer_groups = compiled_layer_groups(profile)  # first matching group wins
     summary: dict = {
         "units": units,
         "layers": n_layers,
@@ -561,7 +549,7 @@ def _build_summary(units, n_layers, n_ins, top, blocks, lengths_out, areas_out) 
     # module estimate from table block names: NPxx = N rows (portrait) x xx per row
     by_block = {}
     for name, v in blocks.items():
-        m = _TABLE_BLOCK_RE.match(name)
+        m = table_block_re.match(name)
         if m and v["inserts_model_total"]:
             per = int(m.group(1)) * int(m.group(2))
             by_block[name] = {"modules_per_table": per, "tables": v["inserts_model_total"]}
@@ -576,21 +564,23 @@ def _build_summary(units, n_layers, n_ins, top, blocks, lengths_out, areas_out) 
     for layer, v in lengths_out.items():
         if v["m"] is None:
             continue
-        for g, rx in _LAYER_GROUPS:
+        for g, rx in layer_groups:
             if rx.search(layer):
                 groups[g] = groups.get(g, 0.0) + v["m"]
                 break
     if groups:
         summary["length_m_by_group"] = {k: round(v, 1) for k, v in sorted(groups.items(), key=lambda kv: -kv[1])}
-    fence = [(k, v["m2"]) for k, v in areas_out.items() if v["m2"] is not None and re.search(r"fence", k, re.I) and not re.search(r"hedge", k, re.I)]
+    fence_in, fence_out = cad_rules["fence_layer_regex"], cad_rules.get("fence_exclude_regex")
+    fence = [(k, v["m2"]) for k, v in areas_out.items()
+             if v["m2"] is not None and re.search(fence_in, k, re.I) and not (fence_out and re.search(fence_out, k, re.I))]
     if fence:
         summary["fenced_area_ha"] = round(sum(a for _, a in fence) / 10_000, 2)
     return summary
 
 
-@register([".dxf"], name="dxf", version="2", file_type="dxf")
-def parse_dxf(path: Path, max_inserts: int = 5000) -> dict:
-    return parse_dxf_text(_decode(path.read_bytes()), max_inserts=max_inserts)
+@register([".dxf"], name="dxf", version="3", file_type="dxf")
+def parse_dxf(path: Path, max_inserts: int = 5000, profile: dict | None = None) -> dict:
+    return parse_dxf_text(_decode(path.read_bytes()), max_inserts=max_inserts, profile=profile)
 
 
 # ---------------------------------------------------------------------------
@@ -640,10 +630,10 @@ def dwg_to_dxf(path: Path, out_dir: Path, version: str = "ACAD2018") -> Path:
     return hits[0]
 
 
-@register([".dwg"], name="dwg", version="3", file_type="dwg")
-def parse_dwg(path: Path, max_inserts: int = 5000) -> dict:
+@register([".dwg"], name="dwg", version="4", file_type="dwg")
+def parse_dwg(path: Path, max_inserts: int = 5000, profile: dict | None = None) -> dict:
     with tempfile.TemporaryDirectory() as tmp_out:
         dxf = dwg_to_dxf(path, Path(tmp_out))
-        result = parse_dxf_text(_decode(dxf.read_bytes()), max_inserts=max_inserts)
+        result = parse_dxf_text(_decode(dxf.read_bytes()), max_inserts=max_inserts, profile=profile)
     result["warnings"].insert(0, "converted from DWG with ODA File Converter")
     return result

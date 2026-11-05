@@ -1,0 +1,15 @@
+{
+  "cad": {
+    "layer_groups": {
+      "mv_cables": "mv.*(cable|kabel)",
+      "trenches": "trench|graben",
+      "fence": "fence|zaun"
+    },
+    "table_block_regex": "^(\\d+)P(\\d+)\\b.*TABLE",
+    "fence_layer_regex": "fence|zaun"
+  },
+  "pdf": {
+    "title_keys": ["Project", "Location", "Title", "Scale", "Drawing No", "Rev"],
+    "module_tables_regex": "(?:Table|String)s? of (\\d+) modules? \\((\\d+) pcs?\\.?\\)"
+  }
+}

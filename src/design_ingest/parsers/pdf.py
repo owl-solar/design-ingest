@@ -220,11 +220,11 @@ _COORD_RE = re.compile(r"(-?\d{1,3}\.\d{3,})\s*[\u00b0\u00ba\ufffd]?\s*,\s*(-?\d
 _STATION_RE = re.compile(r"(Transformer station|Inverter station|Substation)[^\n(]*\((\d+)\s*[x\u00d7]\s*(\d+)\s*kVA\)", re.I)
 
 
-def _parse_title_block(text: str) -> dict:
+def _parse_title_block(text: str, keys=_TITLE_KEYS) -> dict:
     tb: dict = {}
-    key_re = re.compile(r"\b(" + "|".join(re.escape(k) for k in _TITLE_KEYS) + r")\s*:", re.I)
+    key_re = re.compile(r"\b(" + "|".join(re.escape(k) for k in keys) + r")\s*:", re.I)
     ms = list(key_re.finditer(text))
-    canon = {k.lower(): k for k in _TITLE_KEYS}
+    canon = {k.lower(): k for k in keys}
     for n, m in enumerate(ms):
         end = ms[n + 1].start() if n + 1 < len(ms) else len(text)
         lines = text[m.end():end].strip().split("\n")
@@ -268,21 +268,26 @@ def _title_block_text(page) -> str:
         return ""
 
 
-def _drawing_summary(text: str, title_text: str = "") -> dict:
+def _drawing_summary(text: str, title_text: str = "", rules: dict | None = None) -> dict:
+    """``rules`` is the "pdf" section of a profile (title keys, module-table and station patterns)."""
+    rules = rules or {}
+    keys = tuple(rules.get("title_keys", _TITLE_KEYS))
+    tables_re = re.compile(rules["module_tables_regex"], re.I) if rules.get("module_tables_regex") else _TABLES_RE
+    station_re = re.compile(rules["station_regex"], re.I) if rules.get("station_regex") else _STATION_RE
     s: dict = {}
-    tb = _parse_title_block(title_text) if title_text else {}
-    if not tb.get("Project"):  # label not found or area empty: fall back to the whole sheet
-        tb = {**_parse_title_block(text), **tb}
+    tb = _parse_title_block(title_text, keys) if title_text else {}
+    if not tb.get(keys[0]):  # label not found or area empty: fall back to the whole sheet
+        tb = {**_parse_title_block(text, keys), **tb}
     if tb:
         s["title_block"] = tb
-    mt = [(int(a), int(b)) for a, b in _TABLES_RE.findall(text)]
+    mt = [(int(a), int(b)) for a, b in tables_re.findall(text)]
     if mt:
         s["module_tables"] = [{"modules_per_table": a, "tables": b} for a, b in mt]
         s["total_modules"] = sum(a * b for a, b in mt)
     coords = [[float(a), float(b)] for a, b in _COORD_RE.findall(text)]
     if coords:
         s["coordinates"] = coords
-    st = [{"name": m.group(1), "units": int(m.group(2)), "kva_each": int(m.group(3))} for m in _STATION_RE.finditer(text)]
+    st = [{"name": m.group(1), "units": int(m.group(2)), "kva_each": int(m.group(3))} for m in station_re.finditer(text)]
     if st:
         s["transformer_stations"] = st
     return s
@@ -379,13 +384,14 @@ def _pvsyst_summary(pages: list[str], tables: list[Table]) -> dict:
 
 
 # ---------------------------------------------------------------------------
-@register([".pdf"], name="pdf", version="4")
+@register([".pdf"], name="pdf", version="5")
 def parse(
     path: Path,
     tables: bool = True,
     max_pages: int | None = None,
     password: str | None = None,
     drawing_tables: bool = False,
+    profile: dict | None = None,
 ) -> dict:
     import pdfplumber
 
@@ -464,7 +470,8 @@ def parse(
             warnings.append("no text layer on any page (scanned or pure vector drawing) - use extract(vision=True)")
         else:
             warnings.append(f"{len(empty)} page(s) without text layer: {_ranges(empty)}")
-    if low_text:
+    # one chart or cover page in a long document is normal; a scan is image + thin text on most pages
+    if low_text and len(low_text) >= 0.5 * max(len(sizes), 1):
         warnings.append(
             f"{len(low_text)} page(s) with almost no text, probably scanned or image-only: {_ranges(low_text)}"
             " - use extract(vision=True)"
@@ -481,7 +488,7 @@ def parse(
         "rotated_chars": rotated,
     }
     if drawing_text:
-        summ = _drawing_summary("\n".join(drawing_text), "\n".join(title_texts))
+        summ = _drawing_summary("\n".join(drawing_text), "\n".join(title_texts), (profile or {}).get("pdf"))
         if summ:
             data["summary"] = summ
     elif page_texts and "PVsyst - Simulation report" in page_texts[0]:

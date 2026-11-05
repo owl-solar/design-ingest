@@ -84,7 +84,14 @@ class Table(BaseModel):
         return pd.DataFrame(rows, columns=cols)
 
 
+#: Version of the Document layout (fields of Document, Chunk, Table and the documented
+#: ``data["summary"]`` keys). Other projects can check it; it changes only when an
+#: existing field or key is removed or changes meaning. New fields and keys do not change it.
+SCHEMA_VERSION = "1"
+
+
 class Document(BaseModel):
+    schema_version: str = SCHEMA_VERSION
     source: str  # absolute path of the input file
     filename: str
     file_type: str  # pdf, docx, xlsx, csv, dxf, dwg, kml, kmz, pan, ond
