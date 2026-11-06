@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from design_ingest.ask import ask
+from design_ingest.ask import answer_from_hits, ask
 from design_ingest.llm import ExternalCallBlocked, read_log
 from design_ingest.schema import Chunk, Document
 from design_ingest.search import build_index, passages, search, tokenize
@@ -174,3 +174,18 @@ def test_ask_tolerates_missing_found_field_and_bad_answers(docs, isolated):
     with pytest.raises(RuntimeError, match="could not be read"):
         ask("daily power yield register", docs, allow_external=True,
             client=FakeClient({"answer": ["not", "a", "string"]}))
+
+
+def test_answer_from_hits_uses_given_passages_and_same_guard(docs, isolated):
+    hits = [{"file": "X.pdf", "page": 7, "kind": "fault_code",
+             "text": "Fault code 39: Low System Insulation Resistance. Check the ISO resistance."}]
+    with pytest.raises(ExternalCallBlocked):
+        answer_from_hits("what is fault 39?", hits, client=FakeClient({}))
+    fake = FakeClient({"answer": "Check the ISO resistance.", "found": True, "citations": [
+        {"n": 1, "quote": "Check the ISO resistance."}, {"n": 2, "quote": "not sent"}]})
+    a = answer_from_hits("what is fault 39?", hits, client=fake, allow_external=True)
+    assert "Fault code 39" in fake.calls[0]["messages"][0]["content"]
+    assert a.verified and [(c.file, c.page) for c in a.citations] == [("X.pdf", 7)]
+    # no passages: no call
+    fake2 = FakeClient({})
+    assert not answer_from_hits("q", [], client=fake2, allow_external=True).found and fake2.calls == []
