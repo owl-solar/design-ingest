@@ -111,16 +111,32 @@ def ask(
     allow_external: bool | None = None,
 ) -> Answer:
     """Answer ``question`` from ``docs`` (a path, a Document or a list of Documents)."""
-    import os
-
     require_allowed("ask", allow_external)  # before anything is read or sent
-    model = model or os.environ.get("DESIGN_INGEST_MODEL", DEFAULT_MODEL)
     documents = _load(docs)
     hits = build_index(documents).search(question, top_k, doc_types, files)
+    return answer_from_hits(question, hits, model=model, max_tokens=max_tokens, client=client,
+                            allow_external=allow_external)
+
+
+def answer_from_hits(
+    question: str,
+    hits: list[dict[str, Any]],
+    *,
+    model: str | None = None,
+    max_tokens: int = 1024,
+    client=None,
+    allow_external: bool | None = None,
+) -> Answer:
+    """Answer ``question`` from passages the caller already found (hits as ``Index.search`` returns them:
+    ``file``, ``page``, ``kind``, ``text``). Same guard, prompt, tool and quote check as ``ask``; use it
+    when you have your own retrieval (exact lookups, hybrid search, filters)."""
+    import os
+
+    require_allowed("ask", allow_external)
+    model = model or os.environ.get("DESIGN_INGEST_MODEL", DEFAULT_MODEL)
     if not hits:
         return Answer(question=question, answer="No passage in the documents matches the question.",
                       found=False, verified=False, model=None)
-
     blocks = [f"[{i}] {location(h)} ({h['kind']})\n{h['text']}" for i, h in enumerate(hits, 1)]
     prompt = "\n\n".join(blocks) + f"\n\nQuestion: {question}"
     if client is None:
