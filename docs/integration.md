@@ -6,7 +6,7 @@ research code). Everything below is stable within a `schema_version` (see the en
 ## Install, pinned
 
 ```bash
-pip install "design-ingest[llm] @ git+https://github.com/owl-solar/design-ingest@v0.5.1"
+pip install "design-ingest[llm] @ git+https://github.com/owl-solar/design-ingest@v0.6.0"
 # DWG files also need the free ODA File Converter (see README); without it save drawings as DXF.
 ```
 
@@ -59,6 +59,23 @@ Nothing is sent to an external API unless you allow it: `allow_external=True` pe
 variable `DESIGN_INGEST_ALLOW_EXTERNAL=1`. Set `ANTHROPIC_API_KEY` for the key. Every call is logged without
 content (`design-ingest llm-log`); `DESIGN_INGEST_TOKEN_BUDGET` caps tokens per day. Set a spend limit in the
 API console too. Do not enable it for documents you may not share with an external service.
+
+### Hybrid search is optional and needs one download
+
+`search(docs, q, mode="hybrid")` (also `build_index(..., mode="hybrid")`, `design-ingest search --mode hybrid`)
+merges BM25 with a ranking by embedding similarity (reciprocal rank fusion, k=60, top 50 of each) and adds
+`bm25_rank` and `embedding_rank` to every hit. `mode="bm25"` is the default and its results do not change.
+
+- Install: `pip install "design-ingest[embeddings] @ git+...@v0.6.0"` (fastembed, ONNX, no PyTorch).
+- The model `BAAI/bge-small-en-v1.5` (English, about 65 MB) is **not** downloaded by `hybrid`. Run
+  `design-ingest download-model` (Python: `design_ingest.embeddings.download_model()`) once. Without it `hybrid`
+  raises `EmbeddingsUnavailable` that names this command. Folder: `DESIGN_INGEST_MODEL_DIR`, default
+  `~/.cache/design_ingest/models`.
+- Network: `download-model` is a network request to the model host (Hugging Face). It sends no document.
+  Embeddings are computed locally; passage texts and vectors are never sent anywhere, and `hybrid` itself
+  makes no network call. This is separate from the External calls block above (that one is the Anthropic API).
+- Vectors of passages are cached in `~/.cache/design_ingest/vectors.sqlite` (key: sha256 of the passage text +
+  model name); the first index build embeds every passage, later builds only new ones.
 
 ## Practical notes
 

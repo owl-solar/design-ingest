@@ -37,7 +37,7 @@ datasheets; tender requirements) with Claude, validated with pydantic.
 pip install -e path/to/design-ingest
 
 # in another project: pinned version from GitHub
-pip install "design-ingest @ git+https://github.com/owl-solar/design-ingest@v0.5.1"
+pip install "design-ingest @ git+https://github.com/owl-solar/design-ingest@v0.6.0"
 
 # extras
 pip install -e "path/to/design-ingest[llm]"     # LLM extraction (anthropic)
@@ -126,6 +126,7 @@ Set a spend limit in the API console as the hard stop.
 
 ```bash
 design-ingest search manuals/ "default Modbus baud rate"          # offline: nothing leaves the computer
+design-ingest search manuals/ "check that the fans work" --mode hybrid   # BM25 + embeddings, see below
 design-ingest ask manuals/ "Which register holds the daily energy yield?" --allow-external
 ```
 
@@ -145,6 +146,20 @@ page) to the model and asks for a short answer with a verbatim quote per claim. 
 checked in code**: `verified` is true only if the quote occurs word for word in the passage it names;
 an answer without a verified citation is flagged. If nothing matches, no call is made. The same
 permission, log and budget rules as for `extract` apply.
+
+**Hybrid search (optional).** BM25 misses a passage that says the same in other words ("check that the fans
+work" vs "the fans start to run"). `mode="hybrid"` adds a ranking by embedding similarity and merges both
+(reciprocal rank fusion, k=60, top 50 of each); BM25 still decides for exact codes and numbers. It needs
+`pip install "design-ingest[embeddings]"` (fastembed, ONNX, no PyTorch) and a model that you download once,
+on purpose: `design-ingest download-model` (BAAI/bge-small-en-v1.5, about 65 MB, folder
+`~/.cache/design_ingest/models` or `DESIGN_INGEST_MODEL_DIR`). Without the model `hybrid` stops with an error that
+names this command; it never downloads by itself. Passage vectors are cached in
+`~/.cache/design_ingest/vectors.sqlite`. Hits get `bm25_rank` and `embedding_rank`. The default `mode="bm25"` is
+unchanged.
+
+```python
+hits = search(docs, "check that the fans work", mode="hybrid")
+```
 
 ### Command line
 

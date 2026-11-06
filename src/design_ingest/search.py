@@ -18,6 +18,12 @@ Ranking is BM25 over words and numbers (``5003``, ``0.1``, ``kva`` ...), the fil
 counts as text of its passages, and a passage that contains the whole query phrase gets a
 bonus. This is the retrieval step of ``ask`` (``design_ingest.ask``), which adds a model
 only for the final answer.
+
+``mode="hybrid"`` (optional, needs the extra ``embeddings`` and a model downloaded on request, see
+``design_ingest.embeddings``) merges the BM25 ranking with a ranking by embedding similarity, by
+reciprocal rank fusion (k=60) over the top 50 of each; BM25 keeps exact codes and numbers, embeddings
+find passages that say the same in other words. Each hit then has ``bm25_rank`` and ``embedding_rank``
+(None when outside that ranking's top 50). The default ``mode="bm25"`` is unchanged.
 """
 from __future__ import annotations
 
@@ -41,6 +47,9 @@ SYNONYMS: dict[str, list[str]] = {
 
 
 _RECORD_BOOST = 1.6
+MODES = ("bm25", "hybrid")
+RRF_K = 60
+RRF_TOP = 50
 
 
 def _stem(w: str) -> str:
@@ -159,8 +168,14 @@ def passages(doc: Document, max_chars: int = 1200) -> list[dict[str, Any]]:
 class Index:
     """BM25 index over passages."""
 
-    def __init__(self, items: list[dict[str, Any]], k1: float = 1.5, b: float = 0.75):
-        self.items, self.k1, self.b = items, k1, b
+    def __init__(self, items: list[dict[str, Any]], k1: float = 1.5, b: float = 0.75,
+                 mode: str = "bm25", embedder: Any = None, vector_cache: Any = None):
+        if mode not in MODES:
+            raise ValueError(f"mode must be one of {MODES}, not {mode!r}")
+        self.items, self.k1, self.b, self.mode = items, k1, b, mode
+        self.embedder = self.vectors = None
+        if mode == "hybrid":
+            self._embed_items(embedder, vector_cache)
         self.tf: list[Counter] = []
         self.len: list[int] = []
         df: Counter = Counter()
@@ -174,8 +189,19 @@ class Index:
         self.avg = sum(self.len) / n if items else 1.0
         self.idf = {t: math.log(1 + (n - d + 0.5) / (d + 0.5)) for t, d in df.items()}
 
-    def search(self, query: str, top_k: int = 8, doc_types: Iterable[str] | None = None,
-               files: Iterable[str] | None = None) -> list[dict[str, Any]]:
+    def _embed_items(self, embedder: Any, vector_cache: Any) -> None:
+        from . import embeddings
+
+        self.embedder = embedder or embeddings.get_embedder()       # raises EmbeddingsUnavailable
+        own = vector_cache is None
+        cache = embeddings.VectorCache() if own else (vector_cache or None)
+        try:
+            self.vectors = embeddings.embed_texts(self.embedder, [it["text"] for it in self.items], cache)
+        finally:
+            if own and cache:
+                cache.close()
+
+    def _bm25(self, query: str, types, only) -> list[tuple[float, int]]:
         q = list(dict.fromkeys(tokenize(query)))
         if not q:
             return []
@@ -183,15 +209,11 @@ class Index:
         for t in q:
             for extra in SYNONYMS.get(t, []):
                 weight.setdefault(extra, 0.5)
-        types = set(doc_types) if doc_types else None
-        only = {f.lower() for f in files} if files else None
         phrase = " ".join(tokenize(query))
         numbers = {t for t in q if _NUMBER.fullmatch(t)}
         scored = []
         for i, it in enumerate(self.items):
-            if types and it.get("doc_type") not in types:
-                continue
-            if only and it["file"].lower() not in only:
+            if not self._allowed(i, types, only):
                 continue
             tf, ln = self.tf[i], self.len[i]
             s = 0.0
@@ -209,21 +231,54 @@ class Index:
                 s *= 1.3  # the whole phrase appears
             scored.append((s, i))
         scored.sort(key=lambda x: -x[0])
-        return [{**{k: v for k, v in self.items[i].items() if k not in ("_tokens", "_codes")}, "score": round(s, 3)}
-                for s, i in scored[:top_k]]
+        return scored
+
+    def _allowed(self, i: int, types, only) -> bool:
+        it = self.items[i]
+        return not ((types and it.get("doc_type") not in types) or (only and it["file"].lower() not in only))
+
+    def _hit(self, i: int, score: float, **extra) -> dict[str, Any]:
+        return {**{k: v for k, v in self.items[i].items() if k not in ("_tokens", "_codes")},
+                "score": round(score, 3), **extra}
+
+    def search(self, query: str, top_k: int = 8, doc_types: Iterable[str] | None = None,
+               files: Iterable[str] | None = None) -> list[dict[str, Any]]:
+        types = set(doc_types) if doc_types else None
+        only = {f.lower() for f in files} if files else None
+        scored = self._bm25(query, types, only)
+        if self.mode == "bm25":
+            return [self._hit(i, s) for s, i in scored[:top_k]]
+        return self._hybrid(query, scored, top_k, types, only)
+
+    def _hybrid(self, query: str, scored: list[tuple[float, int]], top_k: int, types, only) -> list[dict[str, Any]]:
+        from .embeddings import dot, normalize
+
+        if not tokenize(query):
+            return []
+        qv = normalize(self.embedder.embed_query(query))
+        sims = sorted(((dot(qv, self.vectors[i]), i) for i in range(len(self.items)) if self._allowed(i, types, only)),
+                      key=lambda x: -x[0])
+        bm = {i: r for r, (_, i) in enumerate(scored[:RRF_TOP], 1)}
+        em = {i: r for r, (_, i) in enumerate(sims[:RRF_TOP], 1)}
+        fused = {i: sum(1.0 / (RRF_K + r[i]) for r in (bm, em) if i in r) for i in set(bm) | set(em)}
+        order = sorted(fused, key=lambda i: (-fused[i], bm.get(i, 10**9), em.get(i, 10**9)))
+        return [self._hit(i, fused[i], bm25_rank=bm.get(i), embedding_rank=em.get(i)) for i in order[:top_k]]
 
 
-def build_index(docs: Iterable[Document], max_chars: int = 1200) -> Index:
+def build_index(docs: Iterable[Document], max_chars: int = 1200, mode: str = "bm25",
+                embedder: Any = None, vector_cache: Any = None) -> Index:
+    """``mode="hybrid"`` embeds every passage now (vectors come from the cache when seen before).
+    ``embedder``: anything with ``name``, ``embed`` and ``embed_query`` (default: the local fastembed model)."""
     items: list[dict[str, Any]] = []
     for d in docs:
         items.extend(passages(d, max_chars))
-    return Index(items)
+    return Index(items, mode=mode, embedder=embedder, vector_cache=vector_cache)
 
 
 def search(docs: Iterable[Document], query: str, top_k: int = 8, doc_types: Iterable[str] | None = None,
-           files: Iterable[str] | None = None) -> list[dict[str, Any]]:
+           files: Iterable[str] | None = None, mode: str = "bm25", embedder: Any = None) -> list[dict[str, Any]]:
     """Best passages for ``query`` across ``docs`` (see the module docstring)."""
-    return build_index(docs).search(query, top_k, doc_types, files)
+    return build_index(docs, mode=mode, embedder=embedder).search(query, top_k, doc_types, files)
 
 
 def location(hit: dict[str, Any]) -> str:
